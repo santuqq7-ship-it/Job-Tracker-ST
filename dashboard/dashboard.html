@@ -1,0 +1,455 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>投递状态管家</title>
+  <link rel="stylesheet" href="dashboard.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">
+        <img src="../icons/icon32.png" alt="" width="24" height="24">
+        <span class="brand-name">投递状态管家</span>
+        <span class="brand-date" id="todayLabel"></span>
+      </div>
+      <div class="top-actions">
+        <button id="syncPill" class="btn-ghost sync-pill" type="button" title="云同步状态">☁ 未启用</button>
+        <button id="exportJsonBtn" class="btn-ghost" type="button">导出 JSON</button>
+        <button id="exportCsvBtn" class="btn-ghost" type="button">导出 CSV</button>
+        <button id="importTableBtn" class="btn-ghost" type="button" title="把飞书 / 腾讯文档 / WPS / Excel 里的投递表粘贴进来，也能导入 CSV / TSV 文件">导入表格</button>
+        <button id="importJsonBtn" class="btn-ghost" type="button">导入 JSON</button>
+        <button id="exportCalBtn" class="btn-ghost" type="button" title="导出手机日历文件，手机导入后到点提醒">📅 手机日历</button>
+        <button id="settingsBtn" class="btn-ghost" type="button">⚙ 设置</button>
+        <input id="importJsonFile" type="file" accept=".json,application/json" hidden>
+        <input id="tableImportFile" type="file" accept=".csv,.tsv,.txt,text/csv,text/tab-separated-values,text/plain" hidden>
+      </div>
+    </div>
+  </header>
+
+  <main class="app">
+    <div class="update-banner" id="updateBanner" hidden>
+      检测到扩展已更新 —— 请按 ⌘/Ctrl + R 刷新本页面，避免旧页面覆盖新数据。
+    </div>
+
+    <section class="stats" id="stats"></section>
+
+    <section class="toolbar">
+      <div class="toolbar-row">
+        <input id="searchInput" type="search" placeholder="搜索公司、岗位、JD 或面经…" autocomplete="off">
+        <select id="sortSelect" class="sort-select" title="列表排序方式">
+          <option value="updated">最近更新</option>
+          <option value="deadline">按截止时间</option>
+        </select>
+        <div class="view-toggle" id="viewToggle" role="tablist">
+          <button data-view="list" type="button" title="按公司分组列表">☰ 列表</button>
+          <button data-view="board" type="button" title="按状态看板（可拖拽）">▦ 看板</button>
+        </div>
+      </div>
+      <div class="chips" id="filterChips"></div>
+    </section>
+
+    <section class="upcoming" id="upcoming" hidden>
+      <div class="upcoming-title">⏰ 即将到期 / 已过期</div>
+      <div class="upcoming-list" id="upcomingList"></div>
+    </section>
+
+    <section class="groups" id="groups"></section>
+    <section class="board" id="board" hidden></section>
+
+    <div class="empty-state" id="emptyState" hidden>
+      <div class="empty-icon">📋</div>
+      <div class="empty-title">还没有投递记录</div>
+      <div class="empty-desc">在岗位页面点击浏览器工具栏的扩展图标，一键导入公司、岗位、链接与 JD；<br>导入后在这里跟踪状态、轮次与截止时间。</div>
+    </div>
+  </main>
+
+  <footer class="foot"><span id="footInfo"></span></footer>
+
+  <!-- 编辑模态框 -->
+  <div class="backdrop" id="editModal" hidden>
+    <div class="modal">
+      <div class="modal-head">
+        <h2 id="editModalTitle">编辑投递</h2>
+        <button class="close" type="button" data-close>×</button>
+      </div>
+      <form id="editForm">
+        <div class="form-grid">
+          <div class="mf">
+            <label for="efCompany">公司名 <span class="label-muted">（可留空）</span></label>
+            <input id="efCompany" type="text" autocomplete="off">
+          </div>
+          <div class="mf">
+            <label for="efPosition">岗位名 <span class="label-muted">（可留空）</span></label>
+            <input id="efPosition" type="text" autocomplete="off">
+          </div>
+          <div class="mf full">
+            <button id="swapBtn" class="btn-ghost swap-btn" type="button">⇄ 交换公司名与岗位名（识别反了可一键对调）</button>
+          </div>
+          <div class="mf full">
+            <label for="efUrl">投递链接</label>
+            <input id="efUrl" type="text" autocomplete="off">
+          </div>
+          <div class="mf">
+            <label for="efAppliedAt">投递时间</label>
+            <input id="efAppliedAt" type="datetime-local">
+          </div>
+          <div class="mf">
+            <label for="efStatus">状态</label>
+            <select id="efStatus"></select>
+          </div>
+          <div class="mf" id="efStageWrap" hidden>
+            <label for="efStage">面试轮次</label>
+            <select id="efStage"></select>
+          </div>
+          <div class="mf" id="efResultWrap" hidden>
+            <label for="efResult">结束结果</label>
+            <select id="efResult"></select>
+          </div>
+          <div class="mf full">
+            <div class="deadline-hint" id="efDeadlineHint" hidden></div>
+          </div>
+          <div class="mf full">
+            <label>截止节点 <span class="label-muted">（笔试 / 面试等时间，到点弹提醒）</span></label>
+            <div id="efDeadlines"></div>
+            <button id="addDeadlineBtn" class="btn-ghost add-deadline" type="button">+ 添加节点</button>
+          </div>
+          <div class="mf full">
+            <label for="efNote">备注 <span class="label-muted">（长期保留：内推人、薪资范围、联系人…）</span></label>
+            <textarea id="efNote" rows="2" placeholder="记任何想长期记住的短信息。面试题目与复盘请记在「🎤 面经 / 复盘」里 —— 那里按轮次分开、能写长文"></textarea>
+          </div>
+          <div class="mf full">
+            <label for="efChangeNote">本次变更说明 <span class="label-muted">（写入状态历史，可选）</span></label>
+            <input id="efChangeNote" type="text" placeholder="如：收到邮件通知，9月18日 19:00 笔试" autocomplete="off">
+          </div>
+          <div class="mf full iv-entry">
+            <button id="historyBtn" class="btn-ghost history-btn" type="button">🕘 查看状态历史</button>
+            <button id="ivBtn" class="btn-ghost history-btn" type="button">🎤 面经 / 复盘</button>
+          </div>
+        </div>
+        <div class="modal-foot">
+          <button class="btn-ghost" type="button" data-close>取消</button>
+          <button class="btn-primary" type="submit">保存</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- JD 模态框 -->
+  <div class="backdrop" id="jdModal" hidden>
+    <div class="modal modal-wide">
+      <div class="modal-head">
+        <h2 id="jdModalTitle">岗位 JD</h2>
+        <button class="close" type="button" data-close>×</button>
+      </div>
+      <div class="jd-body">
+        <pre id="jdView" class="jd-view"></pre>
+        <textarea id="jdEdit" class="jd-edit" rows="16" hidden></textarea>
+      </div>
+      <div class="modal-foot jd-foot">
+        <button id="jdOpenLink" class="btn-ghost" type="button">打开原投递链接 ↗</button>
+        <span class="spacer"></span>
+        <button id="jdEditToggle" class="btn-ghost" type="button">编辑 JD</button>
+        <button id="jdSaveBtn" class="btn-primary" type="button" hidden>保存 JD</button>
+        <button id="jdCancelBtn" class="btn-ghost" type="button" hidden>取消</button>
+        <button class="btn-ghost" type="button" data-close>关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 面经 / 复盘模态框：按轮次记题目与经验（结构照 JD 模态框：列表态 / 编辑态切换） -->
+  <div class="backdrop" id="ivModal" hidden>
+    <div class="modal modal-wide">
+      <div class="modal-head">
+        <h2 id="ivModalTitle">面经 / 复盘</h2>
+        <button class="close" type="button" data-close>×</button>
+      </div>
+      <div class="iv-body">
+        <div id="ivList"></div>
+        <div id="ivEdit" hidden>
+          <div class="iv-form">
+            <div class="mf">
+              <label for="ivStage">轮次</label>
+              <select id="ivStage"></select>
+            </div>
+            <div class="mf">
+              <label for="ivAt">时间 <span class="label-muted">（笔试 / 面试是什么时候）</span></label>
+              <input id="ivAt" type="datetime-local">
+            </div>
+            <div class="mf full">
+              <label for="ivQuestion">被问到的问题 <span class="label-muted">（可留空）</span></label>
+              <textarea id="ivQuestion" rows="4" maxlength="2000" placeholder="一轮一问，写不下就再记一条"></textarea>
+            </div>
+            <div class="mf full">
+              <label for="ivReview">复盘 / 经验 <span class="label-muted">（可留空，最多 2 万字）</span></label>
+              <textarea id="ivReview" rows="7" maxlength="20000" placeholder="答得怎么样、哪里卡住了、下次怎么改…"></textarea>
+            </div>
+          </div>
+          <p class="iv-hint" id="ivHint" hidden></p>
+        </div>
+      </div>
+      <div class="modal-foot jd-foot">
+        <span class="spacer"></span>
+        <button id="ivAddBtn" class="btn-ghost" type="button">+ 记录一次</button>
+        <button id="ivSaveBtn" class="btn-primary" type="button" hidden>保存</button>
+        <button id="ivCancelBtn" class="btn-ghost" type="button" hidden>取消</button>
+        <button class="btn-ghost" type="button" data-close>关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 状态历史模态框 -->
+  <div class="backdrop" id="historyModal" hidden>
+    <div class="modal modal-narrow">
+      <div class="modal-head">
+        <h2 id="historyModalTitle">状态历史</h2>
+        <button class="close" type="button" data-close>×</button>
+      </div>
+      <div id="historyBody" class="history-body"></div>
+      <div class="modal-foot">
+        <button class="btn-primary" type="button" data-close>关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 导入报告模态框 -->
+  <div class="backdrop" id="reportModal" hidden>
+    <div class="modal modal-narrow">
+      <div class="modal-head">
+        <h2>导入完成</h2>
+        <button class="close" type="button" data-close>×</button>
+      </div>
+      <div id="reportBody" class="report-body"></div>
+      <div class="modal-foot">
+        <button class="btn-ghost" type="button" id="undoImportBtn" hidden>撤销本次导入</button>
+        <button class="btn-primary" type="button" data-close>好的</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 表格导入模态框：第一步粘贴/选文件，第二步核对列对应关系。预览阶段不写任何存储，取消 = 零副作用 -->
+  <div class="backdrop" id="tableImportModal" hidden>
+    <div class="modal modal-wide">
+      <div class="modal-head">
+        <h2>导入表格</h2>
+        <button class="close" type="button" data-close>×</button>
+      </div>
+      <div class="table-import-body">
+        <div id="tablePasteStep">
+          <div class="paste-zone" id="pasteZone" tabindex="0">
+            <div class="paste-zone-title">在这里粘贴表格</div>
+            <div class="paste-zone-sub">在飞书 / 腾讯文档 / WPS / Excel 里选中区域（<b>连表头一起</b>）→ 复制 → 回到这里按 ⌘/Ctrl + V</div>
+            <div class="paste-zone-sub">也可以把 <code>.csv</code> / <code>.tsv</code> 文件拖进这个框，或
+              <button class="btn-ghost btn-mini" type="button" id="tablePickBtn">选文件</button>
+            </div>
+          </div>
+          <p class="table-msg" id="tablePasteMsg" hidden></p>
+        </div>
+        <div id="tablePreviewStep" hidden>
+          <div class="table-preview" id="tablePreviewBody"></div>
+        </div>
+      </div>
+      <div class="modal-foot">
+        <button class="btn-ghost" type="button" id="tableBackBtn" hidden>重新粘贴</button>
+        <button class="btn-ghost" type="button" data-close>取消</button>
+        <button class="btn-primary" type="button" id="tableConfirmBtn" disabled>确认导入</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 手机日历模态框 -->
+  <div class="backdrop" id="calModal" hidden>
+    <div class="modal modal-wide">
+      <div class="modal-head">
+        <h2>📅 手机日历提醒</h2>
+        <button class="close" type="button" data-close>×</button>
+      </div>
+      <div class="cal-body">
+        <p class="cal-status" id="calStatus"></p>
+        <div class="cal-actions">
+          <button class="btn-primary" type="button" id="calExportBtn">导出日历文件（.ics）</button>
+          <button class="btn-ghost" type="button" id="calClearBtn">导出清空文件</button>
+        </div>
+        <p class="cal-hint" id="calHint"></p>
+
+        <h3 class="cal-h3">第一次导入 · iPhone / iPad</h3>
+        <ol class="cal-steps">
+          <li>把导出的 <code>.ics</code> 文件发到手机（微信「文件传输助手」、AirDrop、邮件附件都行）。</li>
+          <li>手机上点开这个文件 → 右上角「分享/…」→ 用「日历」打开。</li>
+          <li>系统问你加到哪个日历时，<b>点「新建日历」，建一个叫「投递管家」的日历</b>再存进去。</li>
+          <li>完成。到点由系统日历提醒（提前 1 天 + 提前 1 小时各一次）。</li>
+        </ol>
+
+        <h3 class="cal-h3">第一次导入 · Android（小米 / 华为 / OPPO / vivo / 三星）</h3>
+        <ol class="cal-steps">
+          <li>把 <code>.ics</code> 文件存到手机：微信里点开文件 → 右上角「…」→ 用其他应用打开 → 选「日历」。</li>
+          <li>部分机型要手动导入：<b>日历 → 设置 → 导入/导出 → 从文件导入</b>；导入时若能选日历，同样<b>新建一个「投递管家」日历</b>。</li>
+          <li>OPPO / vivo / 荣耀 的自带日历可能没有导入入口，可用系统「文件」App 直接打开该 .ics，或用 Google 日历导入。</li>
+        </ol>
+
+        <h3 class="cal-h3">之后更新（改了截止时间 / 加了新岗位 / 删了岗位）</h3>
+        <ol class="cal-steps">
+          <li>重新点上面的「导出日历文件」，拿到一份新的 <code>.ics</code>（文件名带时间，和上一份不同）。</li>
+          <li><b>先把手机里那个「投递管家」日历整个删掉</b>（iPhone：日历 App 底部「日历」→ 点它右边的 ⓘ → 删除日历；安卓：日历 → 设置 → 找到该日历 → 删除）。</li>
+          <li>再按上面的步骤导入新文件，仍然建/选「投递管家」日历。</li>
+        </ol>
+
+        <p class="cal-note">
+          <b>为什么建议单独建一个「投递管家」日历？</b>
+          ① 本工具导出的提醒全部集中在这一个日历里，绝不碰你自己的其他日程；
+          ② 更新时删掉这一个日历就干净重来，不影响任何别的日程。
+        </p>
+        <p class="cal-note">
+          <b>为什么不直接覆盖导入、非要先删日历？</b>
+          文件里每个截止节点都有固定编号，设计上重新导入应当是「更新同一件事」而不是新增。
+          但实测各手机系统并不可靠：iOS 有时会静默跳过对已有事件的更新，
+          部分安卓日历（含 AOSP 血统的）会无条件新增一条，导致同一件事出现两条。
+          「先删日历再导入」在所有机型上都成立，所以默认按这个来。
+        </p>
+        <p class="cal-note">
+          <b>「导出清空文件」是干什么的？</b>
+          它生成一份把所有旧提醒标记为「已取消」的文件，理论上导入后旧提醒会消失 ——
+          实测 Google 日历、iOS 日历、多数安卓自带日历都<b>不认</b>这个标记，只有 Mac 上的「日历」App 认。
+          所以它只是个辅助手段；不确定时请走上面「删日历 → 重新导入」那条路。
+        </p>
+      </div>
+      <div class="modal-foot">
+        <button class="btn-primary" type="button" data-close>完成</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 设置模态框：云同步 / 手机提醒 / 日历订阅 -->
+  <div class="backdrop" id="settingsModal" hidden>
+    <div class="modal modal-narrow">
+      <div class="modal-head">
+        <h2>设置</h2>
+        <button class="close" type="button" data-close>×</button>
+      </div>
+      <div class="settings-body">
+
+        <section class="set-sec">
+          <h3>☁ 云同步 <span class="set-badge" id="stSyncBadge">未启用</span></h3>
+          <p class="set-desc">多台设备填入同一口令即可自动合并记录。口令即身份，无需注册，不上传邮箱与手机号。<br>
+            记录（含<b>岗位 JD 全文</b>）会存到你填写的服务端上，手机端也能看到。</p>
+          <div class="mf">
+            <label for="stEndpoint">服务端地址</label>
+            <input id="stEndpoint" type="text" placeholder="https://你的默认域名/jobtracker" autocomplete="off" spellcheck="false">
+          </div>
+          <div class="mf">
+            <label for="stToken">同步口令 <span class="label-muted">（管理员发给你的那串；另一台设备填同一串即完成配对）</span></label>
+            <div class="row-inline">
+              <input id="stToken" type="text" placeholder="向管理员索取（本工具不开放自助开号）" autocomplete="off" spellcheck="false">
+              <button id="stCopyToken" class="btn-ghost" type="button">复制</button>
+            </div>
+          </div>
+          <div class="mf" id="stEnrollWrap">
+            <label for="stEnrollKey">注册口令 <span class="label-muted">（管理员给你的准入口令，识别与同步都要用）</span></label>
+            <input id="stEnrollKey" type="text" placeholder="向管理员索取" autocomplete="off" spellcheck="false">
+          </div>
+          <label class="chk"><input id="stEnabled" type="checkbox"> 启用云同步</label>
+          <div class="set-actions">
+            <button id="stTestConn" class="btn-ghost" type="button">连接测试</button>
+            <button id="stSyncNow" class="btn-ghost" type="button">立即同步</button>
+            <button id="stSaveSync" class="btn-primary" type="button">保存</button>
+          </div>
+          <div class="set-status" id="stSyncStatus"></div>
+        </section>
+
+        <section class="set-sec">
+          <h3>🤖 AI 兜底识别 <span class="set-badge" id="stAiBadge">未启用</span></h3>
+          <p class="set-desc">在岗位详情页点扩展图标时，除本地规则外，再把<b>页面地址、网页标题、页面上抓到的候选文本</b>
+            发给云端模型识别一次，把更完整的公司名 / 岗位名填进表单。<br>
+            识别的凭证是「☁ 云同步」里的<b>注册口令</b> —— <b>只认它：不需要同步口令，也不必勾选「启用云同步」</b>。</p>
+          <label class="chk"><input id="stAiEnabled" type="checkbox"> 启用 AI 兜底识别</label>
+          <div class="set-actions">
+            <button id="stAiClear" class="btn-ghost" type="button">清空本机识别缓存</button>
+          </div>
+          <div class="set-status" id="stAiStatus"></div>
+        </section>
+
+        <section class="set-sec">
+          <h3>📱 手机端 <span class="set-badge" id="stPhoneBadge">待配置</span></h3>
+          <p class="set-desc">手机页是适配手机的轻量界面：用手机浏览器打开即可<b>改状态、加截止时间、写备注、查看 JD 全文</b>，
+            与电脑端是同一份记录（依赖上面的云同步，需先启用并保存）。</p>
+          <div class="mf">
+            <label for="stPhoneUrl">手机页地址 <span class="label-muted">（部署静态托管后得到的地址，由管理员提供）</span></label>
+            <input id="stPhoneUrl" type="text" placeholder="https://你的静态托管地址" autocomplete="off" spellcheck="false">
+          </div>
+          <div class="mf">
+            <label for="stPairString">配对串 <span class="label-muted">（发给手机，里面含口令）</span></label>
+            <div class="row-inline">
+              <input id="stPairString" type="text" readonly placeholder="填好服务端地址与口令后自动生成">
+              <button id="stCopyPair" class="btn-ghost" type="button">复制</button>
+            </div>
+          </div>
+          <div class="set-actions">
+            <button id="stSavePhone" class="btn-ghost" type="button">保存手机页地址</button>
+          </div>
+          <div class="set-tip">
+            <b>如何发送到手机：</b>点「复制配对串」，发送到手机（微信「文件传输助手」、邮件等均可），
+            在手机页粘贴后点「解析并填入」，再点「开始使用」。<br>
+            配对串内含同步口令（口令即身份），请勿转发到群聊或他人。<br>
+            手机页地址与口令均由管理员提供。
+          </div>
+          <div class="set-status" id="stPhoneStatus"></div>
+        </section>
+
+        <section class="set-sec">
+          <h3>📱 手机提醒 <span class="set-badge" id="stPushBadge">未配置</span></h3>
+          <p class="set-desc">由服务端定时检查截止节点并推送到手机 —— <b>浏览器关着也能收到</b>。提前 24 小时 / 提前 5 小时 / 已过期各推一次（服务端每 3 小时检查一轮，收到时至少还剩 2 小时）。免费渠道，无需短信费用。</p>
+          <div class="mf">
+            <label for="stPushKind">推送方式</label>
+            <select id="stPushKind">
+              <option value="none">关闭</option>
+              <option value="pushplus">PushPlus（普通微信，推荐）</option>
+              <option value="bark">Bark（iPhone）</option>
+              <option value="generic">通用 Webhook（飞书 / 钉钉 / 企业微信 / 自建）</option>
+            </select>
+          </div>
+          <div class="mf" id="stPushTargetWrap" hidden>
+            <label for="stPushTarget" id="stPushTargetLabel">地址 / Token</label>
+            <input id="stPushTarget" type="text" autocomplete="off" spellcheck="false">
+          </div>
+          <div class="set-tip" id="stPushTip" hidden></div>
+          <label class="chk" id="stFuzzyWrap" hidden><input id="stFuzzy" type="checkbox"> 模糊推送 <span class="label-muted">（推送正文不含公司名，只写"有节点即将到期"）</span></label>
+          <div class="set-actions">
+            <button id="stTestPush" class="btn-ghost" type="button">发送测试推送</button>
+            <button id="stSavePush" class="btn-primary" type="button">保存</button>
+          </div>
+          <div class="set-status" id="stPushStatus"></div>
+        </section>
+
+        <section class="set-sec">
+          <h3>📅 手机日历订阅</h3>
+          <p class="set-desc">把全部截止节点同步到手机<b>自带日历</b>，原生提醒、无需安装任何 App；改了时间手机端会自动更新。</p>
+          <div class="row-inline">
+            <input id="stIcsUrl" type="text" readonly placeholder="启用云同步后自动生成">
+            <button id="stCopyIcs" class="btn-ghost" type="button">复制</button>
+          </div>
+          <details class="set-tip">
+            <summary>iPhone 添加方法</summary>
+            设置 → 日历 → 账户 → 添加账户 → 其他 → 添加已订阅的日历 → 粘贴上面的地址 → 存储
+          </details>
+          <details class="set-tip">
+            <summary>安卓添加方法（华为 / 小米 / OPPO / vivo）</summary>
+            打开系统「日历」→ 找「订阅管理 / 添加订阅 / 日历订阅」→ 粘贴地址。<br>
+            若机型没有该入口，可安装任意支持 ICS 订阅的日历 App（如 Outlook）。
+          </details>
+          <p class="set-desc">不想（或还没）部署服务端？点面板顶栏的「📅 手机日历」导出 <code>.ics</code> 文件，
+            发到手机点开导入系统日历，一样有原生提醒。<br>
+            更新提醒时：重新导出一份，<b>先把手机里那个「投递管家」日历整个删掉再导入</b> ——
+            这是唯一在所有机型上都成立的做法（点开弹窗里有 iPhone / 安卓的分步说明）。</p>
+        </section>
+
+      </div>
+      <div class="modal-foot">
+        <button class="btn-primary" type="button" data-close>完成</button>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="dashboard.js"></script>
+</body>
+</html>

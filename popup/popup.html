@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>投递状态管家</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <img src="../icons/icon32.png" alt="" width="20" height="20">
+      <span>投递状态管家</span>
+    </div>
+    <button id="openDashboard" class="btn-ghost" type="button">打开面板</button>
+  </header>
+
+  <div id="degradeBanner" class="banner" hidden>
+    当前页面无法自动抓取，请手动填写公司、岗位，并展开 JD 框粘贴岗位描述。
+  </div>
+
+  <form id="importForm">
+    <div class="field-row">
+      <div class="field">
+        <label for="position">岗位名 <span class="label-opt">（可留空）</span></label>
+        <input id="position" type="text" placeholder="如：后端开发工程师" autocomplete="off">
+      </div>
+      <div class="field">
+        <label for="company">公司名 <span class="label-opt">（可留空）</span></label>
+        <input id="company" type="text" placeholder="如：字节跳动" autocomplete="off">
+      </div>
+    </div>
+    <div class="guess-source" id="guessSource">识别来源：等待抓取…</div>
+    <div class="ai-line" id="aiLine" hidden></div>
+    <div class="field url-field">
+      <label for="url">投递链接</label>
+      <input id="url" type="text" readonly title="自动读取当前页面地址">
+    </div>
+    <details id="jdDetails" class="jd-box">
+      <summary id="jdSummary">岗位 JD：等待抓取…</summary>
+      <textarea id="jd" rows="6" placeholder="岗位职责 / 任职要求（抓取失败时手动粘贴）"></textarea>
+    </details>
+    <div class="actions">
+      <button id="saveBtn" class="btn-primary" type="submit">保存投递</button>
+      <span id="saveHint" class="hint"></span>
+    </div>
+  </form>
+
+  <section class="recent">
+    <div class="recent-head">
+      <span>最近投递</span>
+      <span id="recentCount" class="muted"></span>
+    </div>
+    <ul id="recentList" class="recent-list"></ul>
+    <div id="recentEmpty" class="empty" hidden>暂无记录 —— 在岗位页面点击本扩展图标即可一键导入</div>
+  </section>
+
+  <footer class="foot">
+    <span id="todayLabel"></span>
+  </footer>
+
+  <div id="toast" class="toast" hidden></div>
+  <script type="module" src="popup.js"></script>
+</body>
+</html>

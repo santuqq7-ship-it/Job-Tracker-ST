@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "投递状态管家",
+  "version": "1.18.2",
+  "description": "秋招投递进度管理：一键导入岗位、状态跟踪、截止时间提醒、多设备云同步、手机推送与日历订阅",
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_title": "投递状态管家"
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "permissions": [
+    "storage",
+    "alarms",
+    "notifications",
+    "activeTab",
+    "scripting",
+    "downloads"
+  ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}
