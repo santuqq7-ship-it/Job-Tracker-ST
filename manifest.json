@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "投递状态管家",
-  "version": "1.18.2",
+  "version": "1.19.0",
   "description": "秋招投递进度管理：一键导入岗位、状态跟踪、截止时间提醒、多设备云同步、手机推送与日历订阅",
   "action": {
     "default_popup": "popup/popup.html",

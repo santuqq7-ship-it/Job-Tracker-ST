@@ -12,6 +12,9 @@ const state = {
   editUpdatedAt: null,  // 快照记录的 updatedAt：老节点没有自己的时间戳时退回到它
   view: localStorage.getItem('tracker.view') === 'board' ? 'board' : 'list',
   sort: localStorage.getItem('tracker.sort') === 'deadline' ? 'deadline' : 'updated',
+  batchMode: false,     // 批量选择模式：卡片操作按钮让位，点卡片本体＝选中/取消
+  batchSel: new Set(),  // 选中的记录 id（每次重绘后靠它回填选中态，见 renderBatchState）
+  batchUndo: null,      // 上一次批量设置的撤销快照，一次性（{snap:[...]}）
 };
 
 const $ = (id) => document.getElementById(id);
@@ -187,8 +190,10 @@ function cardHtml(rec) {
   // 面经只显示条数，绝不把正文塞进 title/data-*：正文往往几千字，塞进 DOM 会让列表变卡
   const ivCount = (rec.interviews || []).length;
 
+  const sel = state.batchMode && state.batchSel.has(rec.id);
   return `
-    <article class="card" id="rec-${rec.id}" data-id="${rec.id}">
+    <article class="card${sel ? ' sel' : ''}" id="rec-${rec.id}" data-id="${rec.id}">
+      ${state.batchMode ? '<span class="batch-check" aria-hidden="true"></span>' : ''}
       <div class="card-main">
         <h3 class="card-pos">${mainLine}</h3>
         <div class="card-co">${subLine}${linkHtml}${noteInd}</div>
@@ -237,12 +242,25 @@ function renderGroups() {
   for (const [company, list] of entries) {
     list.sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
     const section = document.createElement('section');
+    // 批量模式下分组头多一个「全选本组」：同一家公司的多个岗位正好是一组，一次勾完
+    const groupPick = state.batchMode
+      ? `<button class="btn-ghost btn-mini group-pick" type="button">${list.every((r) => state.batchSel.has(r.id)) ? '取消本组' : '全选本组'}</button>`
+      : '';
     section.innerHTML = `
       <div class="group-head">
         <span class="group-name">${S.escapeHtml(company)}</span>
         <span class="group-count">${list.length} 个岗位</span>
+        ${groupPick}
       </div>
       <div class="group-cards">${list.map(cardHtml).join('')}</div>`;
+    const pickBtn = section.querySelector('.group-pick');
+    if (pickBtn) {
+      pickBtn.addEventListener('click', () => {
+        const all = list.every((r) => state.batchSel.has(r.id));
+        for (const r of list) { if (all) state.batchSel.delete(r.id); else state.batchSel.add(r.id); }
+        renderAll();
+      });
+    }
     groupsEl.appendChild(section);
   }
 }
@@ -266,8 +284,10 @@ function boardCardHtml(rec) {
     : '';
   // 看板卡也要有面经入口，否则切到看板就彻底找不到它了
   const bIv = (rec.interviews || []).length;
+  const sel = state.batchMode && state.batchSel.has(rec.id);
   return `
-    <div class="board-card" draggable="true" data-id="${rec.id}">
+    <div class="board-card${sel ? ' sel' : ''}" draggable="${state.batchMode ? 'false' : 'true'}" data-id="${rec.id}">
+      ${state.batchMode ? '<span class="batch-check" aria-hidden="true"></span>' : ''}
       <div class="board-card-pos">${rec.position ? S.escapeHtml(rec.position) : (S.escapeHtml(rec.company) || '未填公司')}</div>
       <div class="board-card-co">${rec.position ? S.escapeHtml(rec.company || '未填公司') : `<span class="tag-warn">${rec.company ? '待补岗位' : '待补公司'}</span>`}${bLink}</div>
       <div class="board-card-meta">${stage}${dl}</div>
@@ -347,6 +367,7 @@ function setView(view) {
 }
 
 function renderAll() {
+  pruneBatchSel();
   renderStats();
   renderChips();
   renderUpcoming();
@@ -357,6 +378,7 @@ function renderAll() {
   boardEl.hidden = !isBoard || totalEmpty;
   if (isBoard) renderBoard(); else renderGroups();
   renderFoot();
+  renderBatchBar();
 }
 
 function scrollToCard(id) {
@@ -383,6 +405,7 @@ function saveFailMessage(err) {
 }
 
 const editModal = $('editModal'), editForm = $('editForm');
+const bmStatus = $('bmStatus'), bmStage = $('bmStage'), bmResult = $('bmResult'), bmShortcuts = $('bmShortcuts');
 const efCompany = $('efCompany'), efPosition = $('efPosition'), efUrl = $('efUrl'),
   efAppliedAt = $('efAppliedAt'), efStatus = $('efStatus'), efStageWrap = $('efStageWrap'),
   efStage = $('efStage'), efResultWrap = $('efResultWrap'), efResult = $('efResult'),
@@ -395,6 +418,19 @@ function initSelects() {
   for (const r of S.RESULTS) efResult.add(new Option(r, r));
   // 面经的轮次比 STAGES 多「笔试 / 测评 / 其他」：那两个是独立状态，不是面试的轮次
   for (const s of S.INTERVIEW_STAGES) ivStage.add(new Option(s, s));
+  // 批量设置：状态多一项「不修改」（值空＝这一项不动），节点名给 4 个常用快捷名
+  bmStatus.add(new Option('不修改', ''));
+  for (const s of S.STATUS_LIST) bmStatus.add(new Option(s, s));
+  for (const s of S.STAGES) bmStage.add(new Option(s, s));
+  for (const r of S.RESULTS) bmResult.add(new Option(r, r));
+  for (const name of new Set(Object.values(S.STATUS_DEADLINE_HINTS))) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'btn-ghost btn-mini';
+    b.dataset.dl = name;
+    b.textContent = name;
+    bmShortcuts.appendChild(b);
+  }
 }
 
 // 编辑面板里的节点行 → 原节点对象。行的身份靠这份登记表，不靠 data-id：
@@ -910,6 +946,7 @@ $('ivBtn').addEventListener('click', () => {
 
 // ---------- 卡片操作（事件委托，列表与看板共用） ----------
 async function handleCardAction(e) {
+  if (state.batchMode) return;  // 批量模式下卡片按钮已隐藏，点卡片本体走选中逻辑（onCardClick）
   const btn = e.target.closest('button[data-action]');
   if (!btn) return;
   const holder = btn.closest('[data-id]');
@@ -933,6 +970,249 @@ async function handleCardAction(e) {
 }
 groupsEl.addEventListener('click', handleCardAction);
 boardEl.addEventListener('click', handleCardAction);
+
+// ---------- 批量设置（一次改多条：状态 / 轮次 / 结果 / 截止节点，或批量删除） ----------
+// 纯客户端功能：批量只是同一套字段的多次写入，每条都照单条编辑的规矩办
+// （S.applyStatusChange 写历史并顶戳、节点自己的 updatedAt 也顶戳），
+// 所以同步、服务端、手机页那一侧一行都不用改。
+const batchBarEl = $('batchBar'), batchModalEl = $('batchModal');
+
+function setBatchMsg(text) { $('batchMsg').textContent = text || ''; }
+
+// 选中集合只保留"此刻看得见"的记录：搜索或筛选一变，被藏起来的自动退出选中。
+// 这样计数永远与眼睛看到的一致，也不可能改到没显示出来的记录。
+function pruneBatchSel() {
+  if (!state.batchMode || state.batchSel.size === 0) return;
+  const visible = new Set(filteredRecords().map((r) => r.id));
+  for (const id of [...state.batchSel]) if (!visible.has(id)) state.batchSel.delete(id);
+}
+
+function renderBatchBar() {
+  document.body.classList.toggle('batch-mode', state.batchMode);
+  batchBarEl.hidden = !state.batchMode;
+  $('batchBtn').classList.toggle('on', state.batchMode);
+  if (!state.batchMode) return;
+  const visible = filteredRecords().length;
+  const n = state.batchSel.size;
+  $('batchCount').textContent = `已选 ${n} 条`;
+  $('batchAllBtn').textContent = `全选当前 ${visible} 条`;
+  $('batchAllBtn').disabled = visible === 0;
+  $('batchClearBtn').disabled = n === 0;
+  $('batchApplyBtn').disabled = n === 0;
+  $('batchDelBtn').disabled = n === 0;
+  $('batchUndoBtn').hidden = !state.batchUndo;
+  if (state.batchUndo) $('batchUndoBtn').textContent = `撤销（${state.batchUndo.snap.length} 条）`;
+}
+
+function toggleBatchMode(on = !state.batchMode) {
+  state.batchMode = on;
+  state.batchSel.clear();
+  state.batchUndo = null;
+  setBatchMsg('');
+  renderAll();
+}
+
+// 批量模式下点卡片本体＝选中 / 取消。各按钮与链接照旧走自己的路。
+function onCardClick(e) {
+  if (!state.batchMode) return;
+  if (e.target.closest('a')) return;
+  if (e.target.closest('.group-pick')) return;
+  const holder = e.target.closest('[data-id]');
+  if (!holder) return;
+  const id = holder.dataset.id;
+  if (state.batchSel.has(id)) state.batchSel.delete(id); else state.batchSel.add(id);
+  renderAll();
+}
+groupsEl.addEventListener('click', onCardClick);
+boardEl.addEventListener('click', onCardClick);
+
+$('batchBtn').addEventListener('click', () => toggleBatchMode());
+$('batchExitBtn').addEventListener('click', () => toggleBatchMode(false));
+$('batchClearBtn').addEventListener('click', () => { state.batchSel.clear(); setBatchMsg(''); renderAll(); });
+$('batchAllBtn').addEventListener('click', () => {
+  for (const r of filteredRecords()) state.batchSel.add(r.id);
+  renderAll();
+});
+$('batchUndoBtn').addEventListener('click', () => undoBatch());
+$('batchDelBtn').addEventListener('click', () => deleteBatch());
+$('batchApplyBtn').addEventListener('click', () => openBatchModal());
+$('bmStatus').addEventListener('change', syncBmVisibility);
+$('bmShortcuts').addEventListener('click', (e) => {
+  const b = e.target.closest('button[data-dl]');
+  if (b) $('bmLabel').value = b.dataset.dl;
+});
+$('bmApplyBtn').addEventListener('click', () => applyBatchModal());
+
+function syncBmVisibility() {
+  const st = $('bmStatus').value;
+  $('bmStageWrap').hidden = st !== S.STATUS.INTERVIEW;
+  $('bmResultWrap').hidden = st !== S.STATUS.ENDED;
+}
+
+function openBatchModal() {
+  const n = state.batchSel.size;
+  if (!n) return;
+  $('bmDesc').textContent = `将应用到选中的 ${n} 条记录；留空的项一律不动。`;
+  $('bmStatus').value = '';
+  $('bmStage').value = '未定';
+  $('bmResult').value = S.RESULTS[0];
+  $('bmLabel').value = '';
+  $('bmDatetime').value = '';
+  $('bmNote').value = '';
+  $('bmApplyBtn').textContent = `应用到 ${n} 条`;
+  bmTip('');
+  syncBmVisibility();
+  batchModalEl.hidden = false;
+}
+
+function bmTip(text) {
+  const el = $('bmTip');
+  el.textContent = text || '';
+  el.hidden = !text;
+  return false;
+}
+
+async function applyBatchModal() {
+  if (batchModalEl.hidden) return;
+  const status = $('bmStatus').value;
+  const label = $('bmLabel').value.trim();
+  const datetime = S.localInputToIso($('bmDatetime').value);
+  const note = $('bmNote').value.trim();
+  if (label && !datetime) return bmTip('填了节点名，却没有填节点时间。');
+  if (!label && datetime) return bmTip('填了节点时间，却没有填节点名（如「笔试截止」）。');
+  if (!status && !label && !note) return bmTip('什么都没选：请至少改一项（状态 / 截止节点 / 变更说明）。');
+  batchModalEl.hidden = true;
+  const n = await applyBatch({
+    status, label, datetime, note,
+    stage: $('bmStage').value,     // 只在状态 = 面试中时用得上
+    result: $('bmResult').value,   // 只在状态 = 已结束时用得上
+  });
+  setBatchMsg(n ? `已更新 ${n} 条` : '没有记录被改动');
+}
+
+// 改动前的快照：撤销时按它还原。深拷贝，撤销期间页面上的对象不会再动到这份。
+// 刻意不含 history：状态历史是两条设备**并集**合并的（mergeHistoryState），
+// 回滚本地那份既留不住（对端那条会再并回来），又会让时间线跟当前状态对不上。
+function snapshotRecord(rec) {
+  return {
+    id: rec.id,
+    status: rec.status, stage: rec.stage ?? null, result: rec.result ?? null,
+    deadlines: JSON.parse(JSON.stringify(rec.deadlines || [])),
+    deadlineTombstones: JSON.parse(JSON.stringify(rec.deadlineTombstones || [])),
+    updatedAt: rec.updatedAt,
+  };
+}
+
+// 同名节点覆盖，而不是再追加一条：批量设「笔试截止 10-08」时，若某条上周已有同名节点，
+// 追加会变成两条同名节点、过期那条还会一直提醒 —— 那是缺陷不是特性。
+// 用户改完时间就该重新提醒一次，所以簿记字段一并清空（与单条编辑改时间同一条规则）。
+function upsertDeadline(rec, label, datetime) {
+  if (!Array.isArray(rec.deadlines)) rec.deadlines = [];
+  const hit = rec.deadlines.find((d) => (d?.label || '') === label);
+  const stamp = S.nextStamp(hit?.updatedAt || rec.updatedAt);
+  if (hit) {
+    hit.datetime = datetime;
+    hit.done = false;
+    hit.updatedAt = stamp;
+    hit.notified24hFor = null;
+    hit.notifiedOverdueFor = null;
+  } else {
+    rec.deadlines.push({
+      id: S.uid(), label, datetime, done: false, updatedAt: stamp,
+      notified24hFor: null, notifiedOverdueFor: null,
+    });
+  }
+  rec.updatedAt = S.nextStamp(rec.updatedAt);
+}
+
+async function applyBatch(patch) {
+  let data;
+  try { data = await S.loadData(); } catch (err) { alert('读取数据失败：' + err?.message); return 0; }
+  const snap = [];
+  for (const id of [...state.batchSel]) {
+    const rec = data.records.find((r) => r.id === id);
+    if (!rec) continue;
+    snap.push(snapshotRecord(rec));
+    if (!Array.isArray(rec.history)) rec.history = [];
+    // 状态没变又没填说明＝这条不用写历史（与单条编辑一致：不为"没改什么"留痕）
+    if (patch.status && (patch.status !== rec.status || patch.note)) {
+      S.applyStatusChange(rec, patch.status, patch.note || '批量设置');
+    }
+    if (patch.status) {  // 轮次/结果的清理规则与编辑面板一致：非面试清轮次、非结束清结果
+      rec.stage = patch.status === S.STATUS.INTERVIEW ? (patch.stage || null) : null;
+      rec.result = patch.status === S.STATUS.ENDED ? (patch.result || null) : null;
+    }
+    if (patch.label && patch.datetime) upsertDeadline(rec, patch.label, patch.datetime);
+  }
+  if (!snap.length) return 0;
+  try { await S.saveData(data); } catch (err) { alert('保存失败：' + err?.message); return 0; }
+  state.data = data;
+  state.batchUndo = { snap };
+  renderAll();
+  return snap.length;
+}
+
+async function undoBatch() {
+  const undo = state.batchUndo;
+  if (!undo) return;
+  state.batchUndo = null;
+  let data;
+  try { data = await S.loadData(); } catch (err) { alert('读取数据失败：' + err?.message); return; }
+  let n = 0;
+  for (const s of undo.snap) {
+    const rec = data.records.find((r) => r.id === s.id);
+    if (!rec) continue;
+    // 顶戳的基准取"这条记录上所有节点里最新的那格"：还原后的节点一定要比批量那一版新。
+    // 节点级 LWW 比的是**节点自己的 updatedAt**（deadlineTime），只顶记录时间戳救不了它：
+    // 对端手里"批量改过"的那一版节点更新，下次同步会把撤销原样盖回来。
+    let base = rec.updatedAt;
+    for (const d of rec.deadlines || []) {
+      if ((Date.parse(d?.updatedAt) || 0) > (Date.parse(base) || 0)) base = d.updatedAt;
+    }
+    for (const d of s.deadlines) d.updatedAt = S.nextStamp(base);
+    // 被撤销掉的新增节点要写墓碑：否则对端手里那条还活着，下次同步会把它并集回来
+    const back = new Set();
+    for (const d of s.deadlines) for (const a of S.deadlineAliases(d)) back.add(a);
+    const tombs = (s.deadlineTombstones || []).slice();
+    for (const d of rec.deadlines || []) {
+      if ([...S.deadlineAliases(d)].some((a) => back.has(a))) continue;
+      tombs.push({ key: S.deadlineKey(d), at: S.nextStamp(d?.updatedAt || rec.updatedAt) });
+    }
+    // 状态变回去时留一条明账：状态历史在两端是按**并集**合并的（union），
+    // 悄悄把批量那条抹掉也抹不干净，不如留一条"撤销批量设置"让时间线自洽。
+    if (rec.status !== s.status) S.applyStatusChange(rec, s.status, '撤销批量设置');
+    rec.status = s.status; rec.stage = s.stage; rec.result = s.result;
+    rec.deadlines = s.deadlines;
+    rec.deadlineTombstones = tombs.filter((t) => t?.key && !back.has(t.key));
+    // 记录本身也要顶戳：否则服务端那份（批量改过、updatedAt 更新）会在下次同步把整条盖回去
+    rec.updatedAt = S.nextStamp(rec.updatedAt);
+    n++;
+  }
+  if (!n) { renderAll(); return; }
+  try { await S.saveData(data); } catch (err) { alert('撤销失败：' + err?.message); return; }
+  state.data = data;
+  renderAll();
+  setBatchMsg(`已撤销 ${n} 条`);
+}
+
+// 删除不做撤销（墓碑只增不删，真撤销要动墓碑，风险大于收益），用二次确认兜住
+async function deleteBatch() {
+  const recs = [...state.batchSel].map(findRecord).filter(Boolean);
+  if (!recs.length) return;
+  const names = recs.slice(0, 3).map((r) => `「${r.company || '未填公司'} · ${r.position || '未填岗位'}」`).join('、');
+  const more = recs.length > 3 ? ` 等 ${recs.length} 条记录` : '';
+  if (!confirm(`删除 ${names}${more}？删除后无法恢复，其他设备上也会一起消失。`)) return;
+  let data;
+  try { data = await S.loadData(); } catch (err) { alert('读取数据失败：' + err?.message); return; }
+  for (const r of recs) SY.tombstone(data, r.id);
+  try { await S.saveData(data); } catch (err) { alert('保存失败：' + err?.message); return; }
+  state.data = data;
+  state.batchSel.clear();
+  state.batchUndo = null;
+  renderAll();
+  setBatchMsg(`已删除 ${recs.length} 条`);
+}
+
 
 // ---------- 导入 / 导出 ----------
 function stamp() {
@@ -1770,9 +2050,16 @@ document.querySelectorAll('.backdrop').forEach((bd) =>
   }));
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
+  let closed = false;
   document.querySelectorAll('.backdrop').forEach((bd) => {
-    if (!bd.hidden) closeBackdrop(bd);
+    if (!bd.hidden) { closeBackdrop(bd); closed = true; }
   });
+  // 没有弹窗可关时，Esc 退出批量模式（选中一并清空）。
+  // 焦点在输入框里时不动：搜索框按 Esc 是"清空关键词"，顺手把选择也清掉太意外。
+  if (closed || !state.batchMode) return;
+  const t = e.target;
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
+  toggleBatchMode(false);
 });
 
 // ---------- 搜索 ----------

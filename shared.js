@@ -1,6 +1,6 @@
 // shared.js — popup / dashboard / background 共用的数据层与工具函数（ES Module）
 
-export const APP_VERSION = '1.18.2';
+export const APP_VERSION = '1.19.0';
 export const SCHEMA_VERSION = 6;
 export const STORAGE_KEY = 'jobTracker';
 

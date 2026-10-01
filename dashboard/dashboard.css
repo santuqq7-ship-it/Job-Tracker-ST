@@ -761,6 +761,55 @@ details.set-tip > :not(summary) { padding: 0 11px; }
 .sync-pill.err { color: var(--danger); border-color: rgba(239, 68, 68, .38); }
 .sync-pill.busy { color: var(--accent-hover); }
 
+/* ---------- 批量设置 ---------- */
+.batch-btn { height: 38px; }
+.batch-btn.on { color: var(--accent-hover); border-color: var(--accent); background: var(--accent-soft); }
+
+.batch-bar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  margin-bottom: 16px; padding: 9px 12px;
+  background: var(--accent-soft); border: 1px solid rgba(139, 92, 246, .35);
+  border-radius: var(--radius-lg);
+}
+.batch-bar[hidden] { display: none; }
+.batch-bar .spacer { flex: 1 1 auto; }
+.batch-bar .btn-ghost.btn-mini, .batch-bar .btn-primary { height: 30px; font-size: 12.5px; padding: 0 12px; }
+.batch-count { font-size: 13px; font-weight: 800; font-variant-numeric: tabular-nums; }
+.batch-msg { font-size: 12.5px; color: var(--accent-hover); }
+.batch-msg:empty { display: none; }
+.batch-bar button:disabled { opacity: .4; pointer-events: none; }
+.batch-del { height: 30px; font-size: 12.5px; padding: 0 11px; color: var(--danger); border-color: rgba(239, 68, 68, .34); background: var(--danger-soft); }
+.batch-del:hover { color: #fff; background: rgba(239, 68, 68, .34); border-color: var(--danger); }
+
+/* 选择模式：卡片自己的操作按钮让位给"点卡片＝选中"，左上角出现复选框。
+   复选框用绝对定位而不是占一列栅格 —— 卡片是响应式栅格，多一列会打乱窄屏布局。 */
+body.batch-mode .card-actions, body.batch-mode .board-card-actions { display: none; }
+body.batch-mode .card { padding-left: 36px; cursor: pointer; }
+body.batch-mode .board-card { position: relative; padding-left: 30px; cursor: pointer; }
+body.batch-mode .board-card:hover { transform: none; }
+.batch-check {
+  position: absolute; left: 12px; top: 50%; transform: translateY(-50%);
+  width: 16px; height: 16px; border-radius: 5px;
+  border: 1.5px solid var(--border-strong); background: rgba(255, 255, 255, .05);
+  transition: all .12s;
+}
+body.batch-mode .board-card .batch-check { left: 10px; }
+.card.sel, .board-card.sel {
+  border-color: var(--accent); background: var(--accent-soft);
+  box-shadow: var(--shadow-md), 0 0 0 1px rgba(139, 92, 246, .4);
+}
+.card.sel .batch-check, .board-card.sel .batch-check { border-color: var(--accent); background: var(--accent); }
+.card.sel .batch-check::after, .board-card.sel .batch-check::after {
+  content: '✓'; position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  color: #fff; font-size: 11px; font-weight: 900; line-height: 1;
+}
+.group-pick { margin-left: 2px; }
+
+.batch-desc { font-size: 12.5px; line-height: 1.7; color: var(--text-2); }
+.batch-shortcuts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 7px; }
+.batch-shortcuts .btn-mini { height: 24px; font-size: 11.5px; padding: 0 9px; }
+
 /* ---------- 响应式 ---------- */
 @media (max-width: 900px) {
   .stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }

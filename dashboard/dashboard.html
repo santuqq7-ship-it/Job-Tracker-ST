@@ -46,8 +46,22 @@
           <button data-view="list" type="button" title="按公司分组列表">☰ 列表</button>
           <button data-view="board" type="button" title="按状态看板（可拖拽）">▦ 看板</button>
         </div>
+        <button id="batchBtn" class="btn-ghost batch-btn" type="button" title="多选若干条投递，一次性改状态与截止节点">☑ 批量</button>
       </div>
       <div class="chips" id="filterChips"></div>
+    </section>
+
+    <!-- 批量选择条：只在批量模式下出现 -->
+    <section class="batch-bar" id="batchBar" hidden>
+      <span class="batch-count" id="batchCount">已选 0 条</span>
+      <span class="batch-msg" id="batchMsg"></span>
+      <button id="batchAllBtn" class="btn-ghost btn-mini" type="button">全选当前</button>
+      <button id="batchClearBtn" class="btn-ghost btn-mini" type="button">清空</button>
+      <span class="spacer"></span>
+      <button id="batchUndoBtn" class="btn-ghost btn-mini" type="button" hidden>撤销</button>
+      <button id="batchDelBtn" class="btn-ghost batch-del" type="button">删除</button>
+      <button id="batchApplyBtn" class="btn-primary" type="button">批量设置…</button>
+      <button id="batchExitBtn" class="btn-ghost btn-mini" type="button" title="退出批量模式（Esc）">退出</button>
     </section>
 
     <section class="upcoming" id="upcoming" hidden>
@@ -209,6 +223,53 @@
       <div id="historyBody" class="history-body"></div>
       <div class="modal-foot">
         <button class="btn-primary" type="button" data-close>关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 批量设置模态框 -->
+  <div class="backdrop" id="batchModal" hidden>
+    <div class="modal modal-narrow">
+      <div class="modal-head">
+        <h2>批量设置</h2>
+        <button class="close" type="button" data-close>×</button>
+      </div>
+      <div class="form-grid">
+        <div class="mf full">
+          <div class="batch-desc" id="bmDesc"></div>
+        </div>
+        <div class="mf">
+          <label for="bmStatus">状态</label>
+          <select id="bmStatus"></select>
+        </div>
+        <div class="mf" id="bmStageWrap" hidden>
+          <label for="bmStage">面试轮次</label>
+          <select id="bmStage"></select>
+        </div>
+        <div class="mf" id="bmResultWrap" hidden>
+          <label for="bmResult">结束结果</label>
+          <select id="bmResult"></select>
+        </div>
+        <div class="mf full">
+          <label for="bmLabel">截止节点 <span class="label-muted">（已有同名节点＝直接改时间，没有＝新增；两项都留空＝不动节点）</span></label>
+          <input id="bmLabel" type="text" placeholder="如：笔试截止" autocomplete="off">
+          <div class="batch-shortcuts" id="bmShortcuts"></div>
+        </div>
+        <div class="mf full">
+          <label for="bmDatetime">节点时间</label>
+          <input id="bmDatetime" type="datetime-local">
+        </div>
+        <div class="mf full">
+          <label for="bmNote">本次变更说明 <span class="label-muted">（写入每条的状态历史，可选）</span></label>
+          <input id="bmNote" type="text" placeholder="如：同一家公司多个岗位同时进笔试" autocomplete="off">
+        </div>
+        <div class="mf full">
+          <div class="deadline-hint" id="bmTip" hidden></div>
+        </div>
+      </div>
+      <div class="modal-foot">
+        <button class="btn-ghost" type="button" data-close>取消</button>
+        <button class="btn-primary" type="button" id="bmApplyBtn">应用</button>
       </div>
     </div>
   </div>
