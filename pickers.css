@@ -1,0 +1,79 @@
+/* pickers.css — pickers.js 画出来的那两个浮层（类型下拉面板 / 日期时间面板）。
+   主面板与小窗口共用这一份：两边的变量名一样、取值略有差别的地方一律写死，
+   免得改了一处另一处没跟上。浮层挂在 body 上，所以 z-index 要高过弹窗（.backdrop 是 40） */
+.picker-pop {
+  position: absolute; z-index: 80;
+  background: #171B2E;
+  border: 1px solid rgba(255, 255, 255, .14);
+  border-radius: 10px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, .6);
+  padding: 4px;
+  animation: picker-in .12s ease;
+}
+@keyframes picker-in { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: none; } }
+
+/* ---------- ① 类型下拉面板（每项后面的 🗑） ---------- */
+.picker-list { min-width: 190px; max-height: 288px; overflow-y: auto; }
+.picker-row {
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 6px 6px 10px; border-radius: 7px;
+  font-size: 12.5px; color: var(--text); white-space: nowrap; cursor: pointer;
+}
+.picker-row:hover { background: rgba(255, 255, 255, .08); }
+.picker-row.on { background: rgba(139, 92, 246, .24); }
+.picker-label { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; }
+.picker-del {
+  flex: none; width: 22px; height: 22px; padding: 0; line-height: 1; font-size: 12px;
+  border: 1px solid rgba(255, 122, 122, .32); border-radius: 6px;
+  background: rgba(239, 68, 68, .12); color: #FF9E9E; cursor: pointer;
+}
+.picker-del:hover { background: rgba(239, 68, 68, .26); color: #FFB4B4; }
+.picker-del:disabled { opacity: .45; cursor: default; }
+
+/* ---------- ② 日期时间面板（月历 + 时/分格子） ---------- */
+.picker-cal { width: 252px; padding: 8px; }
+.picker-head { display: flex; align-items: center; gap: 4px; padding: 0 2px 6px; }
+.picker-title { flex: 1 1 auto; text-align: center; font-size: 12.5px; font-weight: 700; color: var(--text); }
+.picker-nav {
+  flex: none; width: 24px; height: 24px; padding: 0; font-size: 14px; line-height: 1;
+  border: 1px solid var(--border); border-radius: 6px;
+  background: rgba(255, 255, 255, .05); color: var(--text); cursor: pointer;
+}
+.picker-nav:hover { background: rgba(255, 255, 255, .12); }
+/* 翻年那一对用「»」这种双箭头，比翻月那个再弱一点，一眼分得出谁管年谁管月 */
+.picker-nav-y { color: var(--text-2); }
+.picker-week {
+  display: grid; grid-template-columns: repeat(7, 1fr);
+  font-size: 10.5px; color: var(--text-2); text-align: center; padding-bottom: 2px;
+}
+.picker-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 1px; }
+.picker-day {
+  height: 27px; padding: 0; font: inherit; font-size: 12px;
+  border: 0; border-radius: 6px; background: transparent; color: var(--text); cursor: pointer;
+}
+.picker-day:hover { background: rgba(255, 255, 255, .1); }
+.picker-day.out { color: var(--text-3); }                              /* 上下月的补位格 */
+.picker-day.today { box-shadow: inset 0 0 0 1px rgba(34, 211, 238, .6); }
+.picker-day.on { background: var(--accent); color: #FFF; font-weight: 700; }
+.picker-day.on.today { box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .5); }
+/* 时/分：一片小格子，全都看得见、点一下就是它（不再用会展开成 24/60 行长列表的 <select>） */
+.picker-time { display: flex; flex-direction: column; gap: 8px; padding: 8px 2px 2px; border-top: 1px solid var(--border); margin-top: 6px; }
+.picker-time-field { display: flex; flex-direction: column; gap: 4px; }
+.picker-chip-cap { font-size: 10.5px; color: var(--text-2); }
+.picker-chip-grid { display: grid; gap: 3px; }
+.picker-time-field:nth-child(1) .picker-chip-grid { grid-template-columns: repeat(6, 1fr); }   /* 时：6×4 */
+.picker-time-field:nth-child(2) .picker-chip-grid { grid-template-columns: repeat(10, 1fr); }  /* 分：10×6 */
+.picker-chip {
+  height: 24px; padding: 0; font: inherit; font-size: 11.5px; font-variant-numeric: tabular-nums;
+  border: 1px solid var(--border); border-radius: 6px;
+  background: rgba(255, 255, 255, .05); color: var(--text); cursor: pointer;
+}
+.picker-chip:hover { background: rgba(255, 255, 255, .13); }
+.picker-chip.on { background: var(--accent); border-color: var(--accent); color: #FFF; font-weight: 700; }
+.picker-time-field:nth-child(2) .picker-chip { height: 22px; font-size: 11px; }
+/* 面板里没有「确定 / 取消」：改完「分」就算选完（pickers.js 里那一步会直接存下并收起），
+   所以这里也没有页脚那一行 */
+
+/* 日期框交给自建面板之后，原生那个日历小图标就得藏起来 —— 点它会弹出没有「确定」的系统面板 */
+input.dt-input { cursor: pointer; }
+input.dt-input::-webkit-calendar-picker-indicator { display: none; }

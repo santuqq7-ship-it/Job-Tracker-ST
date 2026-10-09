@@ -56,42 +56,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   return false;
 });
 
-// 自动备份：Chrome 每次启动 + 每周一次，把数据导出 JSON 到「下载/投递备份/」目录
-// 数据本体存在 chrome.storage.local（独立于历史记录/Cookie），清除浏览数据不会删除；
-// 自动备份是防呆兜底（换电脑/误删扩展时可恢复）
-const BACKUP_MAX_BYTES = 2_500_000; // data URL 下载的稳妥上限
-
-export async function exportBackup() {
-  try {
-    const data = await S.loadData();
-    const json = JSON.stringify(data, null, 2);
-    if (json.length > BACKUP_MAX_BYTES) {
-      console.warn('[投递管家] 数据过大，跳过自动备份（请手动导出 JSON）');
-      return false;
-    }
-    const d = new Date();
-    const pad = (n) => String(n).padStart(2, '0');
-    const stamp = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-    await chrome.downloads.download({
-      url: 'data:application/json;charset=utf-8,' + encodeURIComponent(json),
-      filename: `投递备份/投递备份-${stamp}.json`,
-      conflictAction: 'overwrite',
-      saveAs: false,
-    });
-    return true;
-  } catch (e) {
-    console.warn('[投递管家] 自动备份失败', e);
-    return false;
-  }
-}
+// 这里原本有一个「自动备份」：每次 Chrome 启动 + 每 7 天，用 chrome.downloads 把数据导出成
+// 「下载/投递备份/投递备份-日期.json」。**已整体删除** —— 它的代价是浏览器里会不定期多出文件，
+// 而这点防呆抵不上"我的电脑怎么自己下载东西"的困扰。备份改为**只在用户点「导出 JSON」时**发生
+// （面板顶栏那个按钮，走 shared.js 的 download()，不经过 chrome.downloads，因此下面 boot 里
+// 也不再需要 downloads 权限了）。数据本体仍然存在 chrome.storage.local，与浏览数据分开，
+// 清历史/缓存不会动它 —— 真正会丢的情形只有"移除扩展"这一种，那个由手动导出负责兜。
 
 export async function boot() {
   // 写版本标记：已打开的旧页面据此提示刷新（避免旧代码覆盖新数据）
   chrome.storage.local.set({ appMeta: { codeVersion: S.APP_VERSION, updatedAt: Date.now() } });
   chrome.alarms.create('sweep', { periodInMinutes: SWEEP_MINUTES });
-  chrome.alarms.create('backup', { periodInMinutes: 7 * 24 * 60 });
   chrome.alarms.create('syncSweep', { periodInMinutes: SYNC_SWEEP_MINUTES });
-  await exportBackup();
   await scheduleNext();
   await refreshBadge();
   await syncOnBoot();
@@ -137,7 +113,6 @@ export async function scheduleNext() {
 }
 
 chrome.alarms.onAlarm.addListener(async (alarm) => {
-  if (alarm.name === 'backup') { await exportBackup(); return; }
   if (alarm.name === 'syncSweep') { await syncOnBoot(); return; }
   if (alarm.name === 'next' || alarm.name === 'sweep') {
     await checkAndNotify();

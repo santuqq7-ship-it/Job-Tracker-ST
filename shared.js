@@ -1,7 +1,7 @@
 // shared.js — popup / dashboard / background 共用的数据层与工具函数（ES Module）
 
-export const APP_VERSION = '1.19.0';
-export const SCHEMA_VERSION = 6;
+export const APP_VERSION = '1.27.0';
+export const SCHEMA_VERSION = 7;
 export const STORAGE_KEY = 'jobTracker';
 
 // ---------- 状态枚举 ----------
@@ -21,6 +21,20 @@ export const STATUS_LIST = Object.values(STATUS);
 export const STAGES = ['未定', '一面', '二面', '三面', '四面', '群面', 'HR面', '终面'];
 // 结束结果（status === 已结束 时有效）
 export const RESULTS = ['拒绝', '放弃', '其他'];
+
+// ---------- 企业类型枚举 ----------
+// 「企业类型」在界面上是一个概念，在数据里是**两个正交字段**：性质（谁控股）与行业（干什么的）。
+// 合成一个字段就必须二选一 —— 国家电网只能记成「央企」或「能源」，于是「筛出所有央企」这件事
+// 直接做不成，而这恰恰是秋招最常用的一个筛选。所以拆开存、合并显示（「央企 · 能源/化工」）。
+// 判定口径与典型示例见 README「企业类型」一节；识别顺序：本地库 → 规则 → 模型 → 留空。
+export const NATURE_LIST = ['央企', '地方国企', '事业单位', '民企', '外企', '合资', '其他'];
+export const INDUSTRY_LIST = [
+  '互联网/科技', '电子/半导体', '通信/ICT', '汽车/新能源', '制造/工业', '能源/化工',
+  '金融', '医药/医疗', '建筑/基建/地产', '快消/零售', '咨询/专业服务', '教育/科研',
+  '交通/物流', '其他',
+];
+// 字段名与显示名的对照（导出 CSV / 表格导入都用这一份）
+export const TYPE_FIELDS = { nature: '企业性质', industry: '行业赛道' };
 
 // 面经条目的轮次：面试轮次（STAGES）之外还要能记笔试与测评 —— 它们不是"面试中"的轮次，
 // 而是独立的状态，所以不能直接复用 STAGES。用派生写法而不是手抄一份，
@@ -313,6 +327,19 @@ const MIGRATIONS = {
       ...r,
       interviews: Array.isArray(r.interviews) ? r.interviews : [],
       interviewTombstones: Array.isArray(r.interviewTombstones) ? r.interviewTombstones : [],
+    })),
+  }),
+  // v6 → v7：新增「企业类型」两个标量字段 nature / industry（空串＝还没识别出来，
+  // 与「其他」是两回事：留空表示不知道，任何自动识别都不会去覆盖已有值）。
+  // 同样必须给每条老记录显式补键：云同步那边「内容有没有变」的比较是全字段的，
+  // 一端有键一端没有会被判成一次真变化，白白多推一轮（能收敛，但不是零成本）。
+  6: (data) => ({
+    ...data,
+    version: 7,
+    records: data.records.map((r) => ({
+      ...r,
+      nature: typeof r.nature === 'string' ? r.nature : '',
+      industry: typeof r.industry === 'string' ? r.industry : '',
     })),
   }),
 };
@@ -860,7 +887,7 @@ function joinPositionSegments(text) {
 }
 
 // ---------- 记录构造与状态变更 ----------
-export function makeRecord({ company, position, url, jd, sourceTitle, appliedAt } = {}) {
+export function makeRecord({ company, position, url, jd, sourceTitle, appliedAt, nature, industry } = {}) {
   const now = new Date().toISOString();
   return {
     id: uid(),
@@ -869,6 +896,9 @@ export function makeRecord({ company, position, url, jd, sourceTitle, appliedAt 
     position: String(position || '').trim(),
     jd: String(jd || '').trim(),
     sourceTitle: String(sourceTitle || '').trim(),
+    // 企业类型：两个标量，空串＝未识别（识别只填空，绝不覆盖已有值）
+    nature: String(nature || '').trim(),
+    industry: String(industry || '').trim(),
     status: STATUS.SCREENING,  // 投递即进入筛选
     stage: null,
     result: null,
@@ -942,6 +972,14 @@ export function fmtDate(iso) {
 export function fmtDateTime(iso) {
   const d = new Date(iso);
   return isNaN(d) ? '—' : TIME_FMT.format(d).replace(/\//g, '-');
+}
+
+/** 文件名里的时间戳（本地时区，如 20261009-1433）：导出备份 / 日历文件时拼在文件名上，
+ *  按名字排序就是按时间排序，多次导出也不会互相覆盖。电脑端与手机端用同一份。 */
+export function fileStamp(now = Date.now()) {
+  const d = new Date(now);
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}`;
 }
 
 export function fmtRelative(iso, now = Date.now()) {

@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>投递状态管家</title>
   <link rel="stylesheet" href="dashboard.css">
+  <link rel="stylesheet" href="../pickers.css">
 </head>
 <body>
   <header class="topbar">
@@ -16,8 +17,8 @@
       </div>
       <div class="top-actions">
         <button id="syncPill" class="btn-ghost sync-pill" type="button" title="云同步状态">☁ 未启用</button>
-        <button id="exportJsonBtn" class="btn-ghost" type="button">导出 JSON</button>
-        <button id="exportCsvBtn" class="btn-ghost" type="button">导出 CSV</button>
+        <button id="exportJsonBtn" class="btn-ghost" type="button" title="把全部记录导出成一个 JSON 文件 —— 这是备份的唯一方式，本工具不会自己往下载目录里写任何东西">导出 JSON</button>
+        <button id="exportCsvBtn" class="btn-ghost" type="button" title="导出成表格（Excel / WPS 能直接打开），只用于看与统计；完整备份请用「导出 JSON」">导出 CSV</button>
         <button id="importTableBtn" class="btn-ghost" type="button" title="把飞书 / 腾讯文档 / WPS / Excel 里的投递表粘贴进来，也能导入 CSV / TSV 文件">导入表格</button>
         <button id="importJsonBtn" class="btn-ghost" type="button">导入 JSON</button>
         <button id="exportCalBtn" class="btn-ghost" type="button" title="导出手机日历文件，手机导入后到点提醒">📅 手机日历</button>
@@ -42,10 +43,12 @@
           <option value="updated">最近更新</option>
           <option value="deadline">按截止时间</option>
         </select>
+        <select id="typeFilter" class="sort-select type-filter" title="按企业性质 / 行业赛道筛选"></select>
         <div class="view-toggle" id="viewToggle" role="tablist">
           <button data-view="list" type="button" title="按公司分组列表">☰ 列表</button>
           <button data-view="board" type="button" title="按状态看板（可拖拽）">▦ 看板</button>
         </div>
+        <button id="typeBtn" class="btn-ghost type-btn" type="button" title="给还没有企业类型的记录批量识别：先用本机规则，认不出的再问模型（只填空，不会改你手填的）">🏷 识别企业类型</button>
         <button id="batchBtn" class="btn-ghost batch-btn" type="button" title="多选若干条投递，一次性改状态与截止节点">☑ 批量</button>
       </div>
       <div class="chips" id="filterChips"></div>
@@ -100,6 +103,22 @@
           </div>
           <div class="mf full">
             <button id="swapBtn" class="btn-ghost swap-btn" type="button">⇄ 交换公司名与岗位名（识别反了可一键对调）</button>
+          </div>
+          <div class="mf">
+            <label for="efNature">企业性质</label>
+            <select id="efNature"></select>
+            <input id="efNatureCustom" class="type-custom" type="text" placeholder="自定义企业性质…" autocomplete="off" hidden>
+          </div>
+          <div class="mf">
+            <label for="efIndustry">行业赛道</label>
+            <select id="efIndustry"></select>
+            <input id="efIndustryCustom" class="type-custom" type="text" placeholder="自定义行业赛道…" autocomplete="off" hidden>
+          </div>
+          <div class="mf full">
+            <div class="type-ai-row">
+              <button id="efTypeAiBtn" class="btn-ghost type-ai-btn" type="button" title="本地企业库或名称规则认错了（比如把「中国中铁」的行业认成交通），点它按这家公司重新问一次模型；只改你没手动动过的那一栏">🤖 AI 再认一次</button>
+              <span class="type-hint" id="efTypeHint" hidden></span>
+            </div>
           </div>
           <div class="mf full">
             <label for="efUrl">投递链接</label>
@@ -274,6 +293,38 @@
     </div>
   </div>
 
+  <!-- 企业类型批量识别模态框 -->
+  <div class="backdrop" id="typeModal" hidden>
+    <div class="modal modal-wide">
+      <div class="modal-head">
+        <h2>识别企业类型</h2>
+        <button class="close" type="button" data-close>×</button>
+      </div>
+      <div class="form-grid">
+        <div class="mf full">
+          <div class="batch-desc" id="tmDesc"></div>
+        </div>
+        <div class="mf full">
+          <div class="type-progress" id="tmProgress" hidden></div>
+        </div>
+        <div class="mf full">
+          <div class="deadline-hint" id="tmTip" hidden></div>
+        </div>
+        <div class="mf full" id="tmPreviewWrap" hidden>
+          <div class="tp-h">识别结果 <span class="label-muted">（只填空，不会改你已经填好的）</span></div>
+          <div class="type-preview" id="tmPreview"></div>
+        </div>
+      </div>
+      <div class="modal-foot">
+        <button class="btn-ghost btn-mini" type="button" id="tmRetryBtn" hidden>重试没认出来的</button>
+        <button class="btn-ghost btn-mini" type="button" id="tmUndoBtn" hidden>撤销本次识别</button>
+        <span class="spacer"></span>
+        <button class="btn-ghost" type="button" data-close>关闭</button>
+        <button class="btn-primary" type="button" id="tmApplyBtn" disabled>应用</button>
+      </div>
+    </div>
+  </div>
+
   <!-- 导入报告模态框 -->
   <div class="backdrop" id="reportModal" hidden>
     <div class="modal modal-narrow">
@@ -334,6 +385,9 @@
         </div>
         <p class="cal-hint" id="calHint"></p>
 
+        <p class="cal-hint">这条路和「订阅」的区别：<b>导出文件再导入，日程会自带「提前 1 天 + 提前 1 小时」两条提醒</b>；
+          订阅链接则只有时间、不会响（见设置里那条说明）。想彻底不用管，用设置里的「📱 手机提醒」推送。</p>
+
         <h3 class="cal-h3">第一次导入 · iPhone / iPad</h3>
         <ol class="cal-steps">
           <li>把导出的 <code>.ics</code> 文件发到手机（微信「文件传输助手」、AirDrop、邮件附件都行）。</li>
@@ -381,6 +435,57 @@
     </div>
   </div>
 
+  <!-- 模型配置：识别请求发给谁（自己的接口 / 云端） -->
+  <div class="backdrop" id="modelModal" hidden>
+    <div class="modal">
+      <div class="modal-head">
+        <h2>🤖 识别模型</h2>
+        <button class="close" type="button" data-close>×</button>
+      </div>
+      <div class="settings-body">
+        <p class="set-desc">岗位识别与企业类型识别可以直接发给你自己的模型服务（任何 OpenAI 兼容的
+          <code>/chat/completions</code> 接口，例如各家大模型开放平台的地址）。<br>
+          填好下面三项并勾选启用后，<b>识别只走这里</b>：请求由这台电脑的浏览器直接发出，
+          不经过云端，也不占用云端额度；云端那份题面（提示词、判据）与这里逐字相同，只是换了个模型来答。
+          <b>不填就照旧走云端</b>（需要「☁ 云同步」里的注册口令）。</p>
+        <div class="mf">
+          <label for="mdBaseUrl">接口地址 <span class="label-muted">（填到 /v1 为止，例如 https://api.deepseek.com/v1）</span></label>
+          <input id="mdBaseUrl" type="text" placeholder="https://…/v1" autocomplete="off" spellcheck="false">
+          <div class="mf-hint" id="mdCallUrl"></div>
+        </div>
+        <div class="mf">
+          <label for="mdApiKey">API Key <span class="label-muted">（只存在这台电脑的浏览器里）</span></label>
+          <div class="row-inline">
+            <input id="mdApiKey" type="password" placeholder="sk-…" autocomplete="off" spellcheck="false">
+            <button id="mdShowKey" class="btn-ghost" type="button">显示</button>
+          </div>
+        </div>
+        <div class="mf">
+          <label for="mdModel">模型名称 <span class="label-muted">（按接口那边认的名字填，例如 deepseek-chat）</span></label>
+          <input id="mdModel" type="text" placeholder="deepseek-chat" autocomplete="off" spellcheck="false">
+        </div>
+        <label class="chk"><input id="mdEnabled" type="checkbox"> 启用本机模型</label>
+        <div class="set-actions">
+          <button id="mdTest" class="btn-ghost" type="button">测试连接</button>
+          <button id="mdClear" class="btn-ghost" type="button">清除</button>
+          <button id="mdSave" class="btn-primary" type="button">保存</button>
+        </div>
+        <div class="set-status" id="mdStatus"></div>
+        <div class="set-tip">
+          <b>关于这个 Key：</b>它只保存在这台电脑的浏览器里（不进记录、不参与云同步、也不会写进「导出 JSON」的备份），
+          只会随识别请求发给你上面填的那个地址。<br>
+          <b>点「测试连接」或「保存」时，浏览器会问你一次</b>「是否允许本扩展访问该地址」——
+          扩展本身没有访问任何网站的权限，只在你填了地址、点了这两个按钮之后申请这一处。<br>
+          <b>本机模型没调通时不会自动改用云端</b>：识别会停下来并说明原因，改好配置即可，
+          这样不会在不知情的时候花掉云端额度。
+        </div>
+      </div>
+      <div class="modal-foot">
+        <button class="btn-primary" type="button" data-close>关闭</button>
+      </div>
+    </div>
+  </div>
+
   <!-- 设置模态框：云同步 / 手机提醒 / 日历订阅 -->
   <div class="backdrop" id="settingsModal" hidden>
     <div class="modal modal-narrow">
@@ -421,10 +526,12 @@
         <section class="set-sec">
           <h3>🤖 AI 兜底识别 <span class="set-badge" id="stAiBadge">未启用</span></h3>
           <p class="set-desc">在岗位详情页点扩展图标时，除本地规则外，再把<b>页面地址、网页标题、页面上抓到的候选文本</b>
-            发给云端模型识别一次，把更完整的公司名 / 岗位名填进表单。<br>
-            识别的凭证是「☁ 云同步」里的<b>注册口令</b> —— <b>只认它：不需要同步口令，也不必勾选「启用云同步」</b>。</p>
+            交给模型识别一次，把更完整的公司名 / 岗位名填进表单；主面板的「🏷 识别企业类型」用的也是它。<br>
+            用哪个模型由下面决定：<b>填了自己的模型就只用它</b>（不经过云端），没填才用云端
+            —— 云端那条路的凭证是「☁ 云同步」里的<b>注册口令</b>，<b>只认它：不需要同步口令，也不必勾选「启用云同步」</b>。</p>
           <label class="chk"><input id="stAiEnabled" type="checkbox"> 启用 AI 兜底识别</label>
           <div class="set-actions">
+            <button id="stModelBtn" class="btn-ghost" type="button">配置模型</button>
             <button id="stAiClear" class="btn-ghost" type="button">清空本机识别缓存</button>
           </div>
           <div class="set-status" id="stAiStatus"></div>
@@ -484,7 +591,8 @@
 
         <section class="set-sec">
           <h3>📅 手机日历订阅</h3>
-          <p class="set-desc">把全部截止节点同步到手机<b>自带日历</b>，原生提醒、无需安装任何 App；改了时间手机端会自动更新。</p>
+          <p class="set-desc">把全部截止节点同步到手机<b>自带日历</b>（只读订阅），改了时间手机端会自动更新，不用装任何 App。</p>
+          <p class="set-desc">但要先知道一件事：<b>订阅进来的日历不会响提醒</b> —— iPhone、安卓、Google 日历都会忽略订阅源里带的提醒设置（它们的取舍是"订阅源不该替订阅者决定怎么提醒"，不是本工具少写了什么）。所以<b>要提醒就用另外两条路</b>：上面的「📱 手机提醒」推送（到点直接推微信 / Bark，电脑关着也收得到），或面板顶栏「📅 手机日历」<b>导出文件后导入</b> —— <b>导入</b>的日程才会带上「提前 1 天 / 提前 1 小时」两条提醒。订阅适合"只想在日历里看见时间"。</p>
           <div class="row-inline">
             <input id="stIcsUrl" type="text" readonly placeholder="启用云同步后自动生成">
             <button id="stCopyIcs" class="btn-ghost" type="button">复制</button>

@@ -26,6 +26,9 @@
   --shadow-lg: 0 24px 80px rgba(0, 0, 0, .65);
   --shadow-glow: 0 0 24px rgba(139, 92, 246, .28);
   --font: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  /* 顶栏是 sticky top:0 的，常驻的批量条要停在它正下方 —— 这个高度在两处必须一致，
+     所以抽成变量（窄屏顶栏内边距变小，在下面的媒体查询里改） */
+  --topbar-h: 59px;
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 /* hidden 属性优先于任何 display 声明，保证视图热切换时只显示当前视图 */
@@ -133,7 +136,9 @@ button { cursor: pointer; }
 
 /* 工具栏 */
 .toolbar { display: flex; flex-direction: column; gap: 10px; margin-bottom: 16px; }
-.toolbar-row { display: flex; gap: 10px; align-items: center; }
+/* 允许多行：这一行除了搜索/排序/视图/批量，还要放企业类型筛选与「识别企业类型」，
+   窄屏挤不下时换行，而不是把整行顶出横向滚动条 */
+.toolbar-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
 #searchInput {
   flex: 1; min-width: 0; height: 40px; padding: 0 14px;
   border: 1px solid var(--border); border-radius: var(--radius-md);
@@ -177,6 +182,9 @@ button { cursor: pointer; }
   box-shadow: 0 2px 10px rgba(139, 92, 246, .4);
 }
 .chips { display: flex; flex-wrap: wrap; gap: 8px; }
+/* 企业类型：筛选下拉（值域是动态的，长值如「咨询/专业服务」不能把整行撑开）与识别入口按钮 */
+.type-filter { max-width: 152px; }
+.type-btn { flex: none; height: 40px; padding: 0 12px; font-size: 12.5px; white-space: nowrap; }
 .chip {
   display: inline-flex; align-items: center; gap: 5px;
   height: 30px; padding: 0 12px;
@@ -309,6 +317,10 @@ button { cursor: pointer; }
 .badge-stage { color: #C9B3FF; background: rgba(139, 92, 246, .28); }
 .badge-result { color: #FF9E9E; background: rgba(239, 68, 68, .18); }
 .badge-muted { color: #8A93A8; background: rgba(148, 163, 184, .14); }
+/* 企业类型：与轮次/结果同一档的"属性标签"，用青色与它们区分开（这两个值会跟很久，值得一眼看见） */
+.badge-type { color: #8BE3F2; background: rgba(34, 211, 238, .14); }
+/* 还没填的那态：同一枚标签的灰版本（必须排在 .badge-type 之后 —— 两者特异度相同，靠顺序定胜负） */
+.badge-type-none { color: #8A93A8; background: rgba(148, 163, 184, .14); }
 .card-date { color: var(--text-3); font-size: 12px; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .card-deadline { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 12px; min-width: 0; }
 .card-deadline .dl-none { color: var(--text-3); }
@@ -430,6 +442,9 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   backdrop-filter: blur(4px);
 }
 .backdrop[hidden] { display: none; }
+/* 模型配置是从设置面板里点开的（设置面板并不关闭），两层都是 40 → 靠这一条压在上面。
+   写在 CSS 里而不是靠 DOM 顺序：它回答的是"谁盖着谁"，跟文件里谁先谁后没关系。 */
+#modelModal { z-index: 45; }
 .modal {
   width: min(580px, 100%);
   max-height: min(86vh, 780px);
@@ -470,6 +485,12 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .mf.full { grid-column: 1 / -1; }
 .mf label { font-size: 12.5px; font-weight: 700; color: var(--text-2); }
 .label-muted { font-weight: 400; color: var(--text-3); }
+
+/* 「将调用：…」那一行：说明地址被怎么解读了（用户填的整条 /chat/completions 会被去掉）。
+   内容由 dashboard.js 的 renderModelCallUrl() 填，空地址时整行不显示 */
+.mf-hint { font-size: 12px; color: var(--text-3); line-height: 1.6; word-break: break-all; }
+.mf-hint:empty { display: none; }
+.mf-hint.warn { color: var(--warn-fg); }
 .req { color: var(--danger); }
 .mf input, .mf select, .mf textarea, .jd-edit {
   width: 100%; height: 38px; padding: 0 11px;
@@ -485,6 +506,10 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .mf select option { background: #161A2E; color: var(--text); }
 /* 上次同步因缺注册口令失败：把这一栏标出来（与截止时间的错误态同色） */
 .mf input.need { border-color: var(--danger); box-shadow: 0 0 0 3px rgba(239, 68, 68, .25); }
+/* AI 重认填过的两栏：紫色描边，和面板里其他"AI 改过的字段"用同一个信号 */
+.mf select.ai-filled, .mf input.type-custom.ai-filled {
+  border-color: rgba(139, 92, 246, .55); box-shadow: 0 0 0 3px rgba(139, 92, 246, .14);
+}
 
 /* 截止节点动态行 */
 .deadline-hint {
@@ -659,6 +684,26 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .table-preview .t3 { color: var(--text-3); }
 #tableBackBtn { margin-right: auto; }
 
+/* 企业类型批量识别：进度行 + 结果预览（表格沿用上面 .preview-table 那套，只加高度上限） */
+.type-progress { font-size: 12.5px; line-height: 1.7; color: var(--text-2); margin-top: 10px; }
+.type-progress b { color: var(--accent-hover); font-variant-numeric: tabular-nums; }
+.type-preview { max-height: 300px; overflow-y: auto; margin-top: 2px; }
+.type-preview .src-cell { font-size: 11.5px; white-space: nowrap; }
+/* 来源的可信度不同（本地库 = 认出来的，AI = 推出来的，未识别 = 空的），颜色要分开 */
+.src-lib { color: #8BE3F2; }
+.src-rule { color: #8BE3F2; }
+.src-ai { color: #C9B3FF; }
+.src-none { color: var(--text-3); }
+/* 「AI 再认一次」：本地企业库认错时的补救入口，跟两栏下拉贴在一起 */
+.type-ai-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.type-ai-btn { height: 30px; font-size: 12.5px; padding: 0 12px; white-space: nowrap; }
+.type-ai-btn[disabled] { opacity: .6; cursor: default; }
+.type-ai-row .type-hint { margin: 0; font-size: 11.5px; color: var(--text-3); line-height: 1.5; }
+.type-custom { height: 34px; padding: 0 10px; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, .05); color: var(--text); font: inherit; font-size: 12.5px; outline: none; }
+.type-custom:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(139, 92, 246, .22); }
+/* 「删掉某个自定义取值」的 🗑 不在这里 —— 它长在下拉面板里每一项的右边（pickers.css 的 .picker-del） */
+
 /* 手机日历 */
 .cal-body {
   padding: 18px 20px; font-size: 13.5px; line-height: 1.85;
@@ -765,11 +810,19 @@ details.set-tip > :not(summary) { padding: 0 11px; }
 .batch-btn { height: 38px; }
 .batch-btn.on { color: var(--accent-hover); border-color: var(--accent); background: var(--accent-soft); }
 
+/* 批量条常驻：记录多的用户要滑到底挑岗位，条子跟着滚走就得来回滑 —— 定在顶栏下方。
+   sticky 在这里一定生效：祖先链只有 main.app → body → html，三者都没有
+   overflow / transform / filter / contain。 */
 .batch-bar {
+  position: sticky; top: var(--topbar-h); z-index: 19;   /* 顶栏 20、模态框 40 */
   display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
   margin-bottom: 16px; padding: 9px 12px;
-  background: var(--accent-soft); border: 1px solid rgba(139, 92, 246, .35);
+  /* 底色必须不透明：原来那层 rgba(139,92,246,.20) 是给"平铺在页面里"用的，
+     常驻之后卡片会从底下透出来糊成一片。下面垫一层实色，上面仍是原来的紫调 */
+  background: linear-gradient(var(--accent-soft), var(--accent-soft)), rgba(16, 14, 30, .95);
+  border: 1px solid rgba(139, 92, 246, .35);
   border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-md);
 }
 .batch-bar[hidden] { display: none; }
 .batch-bar .spacer { flex: 1 1 auto; }
@@ -825,7 +878,9 @@ body.batch-mode .board-card .batch-check { left: 10px; }
   .card-actions { grid-area: actions; }
 }
 @media (max-width: 640px) {
+  :root { --topbar-h: 55px; }   /* 顶栏内边距变小，常驻的批量条要跟着上移 */
   .app { padding: 16px 14px 8px; }
+  .toolbar-row { gap: 8px; }
   .topbar-inner { padding: 10px 14px; }
   .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .card { grid-template-columns: 1fr auto; grid-template-areas: "main status" "deadline deadline" "actions actions"; }

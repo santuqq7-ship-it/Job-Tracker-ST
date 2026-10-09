@@ -180,6 +180,17 @@ export async function recognizeJob(cfg, body, { timeoutMs = 12000 } = {}) {
   return apiFetch(cfg, '/api/recognize', { method: 'POST', body, timeoutMs, needToken: false });
 }
 
+// 企业类型识别：把**公司名**（一批 ≤12 家）与**用户自定义的候选取值**一起交上去，
+// 返回 "{name, nature, industry}[]"。自定义清单是"这一次请求"的候选集：由 ai.js 每次现读本机那份，
+// 服务端把它并进提示词、并放宽白名单（于是用户自己加的分类真的能答出来）。
+// `custom` 为空/缺省时**连这个键都不带** —— 请求体与不带自定义时逐字节一致。
+// 与识别同一套凭证（只有注册口令）与同一套简单请求约定；批量那层、去重、缓存都在 ai.js，
+// 这里只管一趟 HTTP。老服务端没有这个路由 → 404 → 调用方安静降级成"这次没有建议"。
+export async function classifyCompanies(cfg, { names, custom } = {}, { timeoutMs = 15000 } = {}) {
+  const body = custom ? { names, custom } : { names };
+  return apiFetch(cfg, '/api/classify', { method: 'POST', body, timeoutMs, needToken: false });
+}
+
 // ---------- 待推送的负载 = 记录原文 ----------
 // 这里曾经有个 recordPayload(rec, { syncJd })：关掉「同步 JD 全文」时把 jd 字段整个摘掉。
 // 那是个陷阱，删掉不再提供 —— 服务端把 data 当**不透明整包**落库（protocol.js 的

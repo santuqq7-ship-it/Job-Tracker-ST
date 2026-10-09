@@ -3,9 +3,15 @@ import * as S from '../shared.js';
 import * as SY from '../sync.js';
 import * as AI from '../ai.js';
 import * as T from '../transfer.js';
+import * as CT from '../company-type.js';
+import * as MODELS from '../model.js';
+// 两个自己画的控件：类型下拉（每一项右边一个 🗑）与日期时间（改完「分」就算选完）
+import { attachTypeSelect, attachDateInput, closePicker } from '../pickers.js';
 
 const state = {
   data: null, query: '', filter: 'all', editId: null, jdId: null, jdEditing: false,
+  typeFilter: '',       // 企业类型筛选：'' / 'none'（未填）/ 'n:央企' / 'i:汽车/新能源'
+  typeRun: null,        // 批量识别那一次的结果（预览表 + 撤销快照都在里面，见 runTypeClassify）
   ivId: null,           // 面经弹窗当前打开的是哪条记录
   ivEditing: null,      // null = 阅读态；{mode:'new'} 或 {mode:'edit', key} = 编辑态
   editDeadlines: [],    // 打开编辑面板那一刻的 rec.deadlines 快照（提交时判断哪些节点被删了）
@@ -37,7 +43,18 @@ function queryFilteredRecords() {
   });
 }
 
-// 完整过滤：搜索词 + 当前选中的状态筛选
+// 企业类型的筛选判据。值域刻意做成「前缀 + 值」而不是两个字段名：
+// 性质与行业的取值绝不会有交集（枚举是两份），一个下拉就够，也不用记"这个值是性质还是行业"。
+// 'none' 只看「两个字段都空」—— 只填了一半的记录在按「未填」筛时不该出现（它已经有类型了）
+function matchTypeFilter(rec, key) {
+  if (!key) return true;
+  if (key === 'none') return !rec.nature && !rec.industry;
+  if (key.startsWith('n:')) return rec.nature === key.slice(2);
+  if (key.startsWith('i:')) return rec.industry === key.slice(2);
+  return true;
+}
+
+// 完整过滤：搜索词 + 当前选中的状态筛选 + 企业类型筛选（列表/看板/批量计数共用这一个漏斗）
 function filteredRecords() {
   let recs = queryFilteredRecords();
   if (state.filter === 'active') recs = recs.filter((r) => S.ACTIVE_STATUSES.includes(r.status));
@@ -45,6 +62,7 @@ function filteredRecords() {
     const s = state.filter.slice(7);
     recs = recs.filter((r) => r.status === s);
   }
+  if (state.typeFilter) recs = recs.filter((r) => matchTypeFilter(r, state.typeFilter));
   return recs;
 }
 
@@ -150,12 +168,23 @@ function sortByDeadline(recs) {
   });
 }
 
+// 企业类型徽标：性质与行业合成一枚（「央企 · 能源/化工」），只填了一半就只显示那一半。
+// 两样都空 = 还没认过，给一枚灰的「类型待确认」—— 它正是「未填」筛选要抓的那些，
+// 不标出来用户就只能一条条点开看（与「无 JD」同一个做法）
+function typeBadgeHtml(rec) {
+  const label = CT.typeLabel(rec.nature, rec.industry);
+  // 两态都挂 badge-type：这是同一枚标签的"有值 / 没值"两种样子，badge-type-none 只负责换颜色
+  if (label) return `<span class="badge badge-type">${S.escapeHtml(label)}</span>`;
+  return `<span class="badge badge-type badge-type-none" title="企业类型还没填：工具栏的「🏷 识别企业类型」可以批量补">类型待确认</span>`;
+}
+
 // ---------- 渲染：公司分组整行卡片（每条投递一行，展示岗位/公司/状态/轮次/全部截止节点） ----------
 function cardHtml(rec) {
   const [fg, bg] = S.statusColor(rec.status);
   const badges = [];
   if (rec.status === S.STATUS.INTERVIEW && rec.stage && rec.stage !== '未定') badges.push(`<span class="badge badge-stage">${S.escapeHtml(rec.stage)}</span>`);
   if (rec.status === S.STATUS.ENDED && rec.result) badges.push(`<span class="badge badge-result">${S.escapeHtml(rec.result)}</span>`);
+  badges.push(typeBadgeHtml(rec));
   if (!rec.jd) badges.push(`<span class="badge badge-muted">无 JD</span>`);
 
   const deadlines = (rec.deadlines || []);
@@ -284,13 +313,14 @@ function boardCardHtml(rec) {
     : '';
   // 看板卡也要有面经入口，否则切到看板就彻底找不到它了
   const bIv = (rec.interviews || []).length;
+  const bType = CT.typeLabel(rec.nature, rec.industry);
   const sel = state.batchMode && state.batchSel.has(rec.id);
   return `
     <div class="board-card${sel ? ' sel' : ''}" draggable="${state.batchMode ? 'false' : 'true'}" data-id="${rec.id}">
       ${state.batchMode ? '<span class="batch-check" aria-hidden="true"></span>' : ''}
       <div class="board-card-pos">${rec.position ? S.escapeHtml(rec.position) : (S.escapeHtml(rec.company) || '未填公司')}</div>
       <div class="board-card-co">${rec.position ? S.escapeHtml(rec.company || '未填公司') : `<span class="tag-warn">${rec.company ? '待补岗位' : '待补公司'}</span>`}${bLink}</div>
-      <div class="board-card-meta">${stage}${dl}</div>
+      <div class="board-card-meta">${stage}${bType ? `<span class="badge badge-type">${S.escapeHtml(bType)}</span>` : ''}${dl}</div>
       <div class="board-card-actions">
         <button class="mini" data-action="iv" type="button" title="面经 / 复盘">🎤${bIv ? ` ${bIv}` : ''}</button>
         <button class="mini" data-action="jd" type="button">JD</button>
@@ -368,6 +398,9 @@ function setView(view) {
 
 function renderAll() {
   pruneBatchSel();
+  // 在 renderChips/renderGroups 之前：它可能在"选中的取值已经不存在了"时把筛选退回「全部」，
+  // 退得晚一步，这一帧就会显示成"下拉写着全部、列表却空着"
+  renderTypeFilter();
   renderStats();
   renderChips();
   renderUpcoming();
@@ -379,6 +412,9 @@ function renderAll() {
   if (isBoard) renderBoard(); else renderGroups();
   renderFoot();
   renderBatchBar();
+  // 放在最后：顶栏里那排按钮（含随内容变长的同步状态）折行与否会改变它的高度，
+  // 而批量条就停在这个高度下面（CSS 的 --topbar-h）
+  syncTopbarHeight();
 }
 
 function scrollToCard(id) {
@@ -464,6 +500,8 @@ function addDeadlineRow(dl, isNew = false) {
   const row = wrap.firstElementChild;
   editRows.push({ row, node: isNew ? null : (dl || null) });
   efDeadlines.appendChild(row);
+  // 时间框走自建日历：选完「分」就把值写进来并收起输入框（与点行尾那个「✓ 确定」同一条收尾路）
+  attachDateInput(row.querySelector('.dl-datetime'), { onCommit: () => toggleDeadlineTime(row) });
   return row;
 }
 
@@ -523,6 +561,12 @@ function openEditModal(id) {
   efResult.value = rec.result || '其他';
   efNote.value = rec.notes || '';
   efChangeNote.value = '';
+  fillTypeEditors(rec);
+  // 「AI 再认一次」的状态跟着弹窗一起重置：上一次开窗时动过的那两栏不该影响这一次
+  efTypeDirty.nature = false;
+  efTypeDirty.industry = false;
+  $('efTypeHint').hidden = true;
+  $('efTypeAiBtn').disabled = false;
   $('historyBtn').textContent = `🕘 查看状态历史（${(rec.history || []).length} 条）`;
   refreshIvBtn();
   // 快照：提交时用它判断"哪些节点是被 × 掉的"，而不是拿提交那刻重读的数据反推
@@ -597,6 +641,12 @@ editForm.addEventListener('submit', async (e) => {
   const changeNote = efChangeNote.value.trim();
   const url = efUrl.value.trim();
   const applied = S.localInputToIso(efAppliedAt.value);
+  const nature = readTypeEditor('efNature', 'efNatureCustom');
+  const industry = readTypeEditor('efIndustry', 'efIndustryCustom');
+  if (nature.bad || industry.bad) {
+    alert('企业类型选了「＋ 自定义…」，但没填内容。\n\n请输入自定义的写法，或把那一栏改回「（未填）」再保存。');
+    return;   // 保持面板打开，别的地方填的东西一点都不丢
+  }
 
   // 读-改-写：以存储中最新的数据为准，避免多标签页/旧页面内存数据相互覆盖。
   // 读也在 try 里：扩展重载后没刷新的旧面板页，chrome.storage 会抛 Extension context invalidated，
@@ -615,6 +665,11 @@ editForm.addEventListener('submit', async (e) => {
   rec.position = position;
   rec.url = url;
   rec.notes = notes;
+  // 企业类型：手动编辑是最高优先 —— 批量识别、导入识别都不会再改它（它们只填空）
+  rec.nature = nature.value;
+  rec.industry = industry.value;
+  CT.rememberCustomType(data, 'nature', nature.value);
+  CT.rememberCustomType(data, 'industry', industry.value);
   if (applied) rec.appliedAt = applied;
   // 状态变更记录历史；状态未变但写了变更说明时也留一条记录
   if (nextStatus !== rec.status || changeNote) S.applyStatusChange(rec, nextStatus, changeNote);
@@ -1196,6 +1251,487 @@ async function undoBatch() {
 }
 
 // 删除不做撤销（墓碑只增不删，真撤销要动墓碑，风险大于收益），用二次确认兜住
+// ---------- 企业类型：筛选取值 / 编辑面板 / 批量识别 ----------
+// 两套取值集合，别混（理由写在 company-type.js 那两个函数的注释里）：
+//   · 编辑弹窗里**能选什么** = 枚举 ∪ 本机自定义清单（CT.typeChoices）—— 刻意不扫记录，
+//     否则删掉一个自定义取值后它还在下拉里，用户看到的与"已删掉"这句话对不上
+//   · 工具栏**能筛什么** = 上面那份 ∪ 记录里出现过的值（CT.typeValues）—— 别的设备填的写法也得筛得到
+// 两份实现都在 company-type.js（扩展小窗口用的是同一份，抄两遍迟早会漂），这里只把 state.data 递进去
+function typeChoices(field) {
+  return CT.typeChoices(field, state.data);
+}
+function typeValues(field) {
+  return CT.typeValues(field, state.data);
+}
+
+// 工具栏的类型筛选下拉。选项**动态重建**（要能收下自定义值），但只在取值集合真的变了才动 DOM ——
+// 每次 renderAll 都重写一遍会把正开着的下拉关掉
+function renderTypeFilter() {
+  const sel = $('typeFilter');
+  if (!sel) return;
+  const natures = typeValues('nature'), industries = typeValues('industry');
+  const sig = JSON.stringify([natures, industries]);
+  if (sel.dataset.sig !== sig) {
+    sel.textContent = '';
+    sel.add(new Option('全部企业类型', ''));
+    sel.add(new Option('（未填）', 'none'));
+    const gNature = document.createElement('optgroup');
+    gNature.label = '企业性质';
+    for (const v of natures) gNature.appendChild(new Option(v, 'n:' + v));
+    const gIndustry = document.createElement('optgroup');
+    gIndustry.label = '行业赛道';
+    for (const v of industries) gIndustry.appendChild(new Option(v, 'i:' + v));
+    sel.append(gNature, gIndustry);
+    sel.dataset.sig = sig;
+  }
+  // 选中的值可能已经不在了（自定义值被改掉、那条记录被删）：退回「全部」——
+  // 否则下拉显示着「全部」、列表却一直是空的，用户只能靠刷新自救
+  if (state.typeFilter && ![...sel.options].some((o) => o.value === state.typeFilter)) state.typeFilter = '';
+  sel.value = state.typeFilter;
+  sel.classList.toggle('on', Boolean(state.typeFilter));
+}
+
+// 编辑面板的两个下拉：首项「（未填）」，末项「＋ 自定义…」——选中它就在下面展开一个输入框。
+// 不用 prompt()：它在无头测试里会把整页卡死，而且深色面板里弹一个系统框也很出戏
+// （那个哨兵值 CT.CUSTOM_OPT 与展开逻辑两处共用，小窗口同款）
+// 「删掉某一项」的 🗑 由 pickers.js 画在下拉面板里每一项的右边（原生 select 塞不进按钮）
+function fillTypeEditors(rec) {
+  for (const [field, selId, inputId] of [['nature', 'efNature', 'efNatureCustom'],
+    ['industry', 'efIndustry', 'efIndustryCustom']]) {
+    const sel = $(selId), input = $(inputId);
+    sel.textContent = '';
+    sel.add(new Option('（未填）', ''));
+    const list = typeChoices(field);
+    for (const v of list) sel.add(new Option(v, v));
+    // 这条记录自己的旧值：清单里已经没有它了（那个自定义取值被删过）也必须能显示、能选回来，
+    // 否则一打开这条记录就被静默改成「（未填）」，保存一下值就没了
+    const cur = String(rec[field] || '').trim();
+    if (cur && !list.includes(cur)) sel.add(new Option(`${cur}（旧值）`, cur));
+    sel.add(new Option('＋ 自定义…', CT.CUSTOM_OPT));
+    sel.value = cur;
+    input.value = '';
+    input.hidden = true;
+  }
+}
+
+// 「这次打开的编辑弹窗里，用户动过哪一栏」。开弹窗时清零 —— 两栏里带着的记录旧值
+// （可能是本地企业库填错的）不算"用户动过"，否则「AI 再认一次」永远改不动它
+const efTypeDirty = { nature: false, industry: false };
+
+// 把一栏设成 AI 给的答案。值一定是候选集内的（枚举 ∪ 本机自定义值，ai.js 已按它校验过），
+// 万一不在下拉里就走「＋ 自定义…」那条输入框，别把它丢了
+function setTypeEditor(field, value) {
+  const selId = field === 'nature' ? 'efNature' : 'efIndustry';
+  const inputId = field === 'nature' ? 'efNatureCustom' : 'efIndustryCustom';
+  const sel = $(selId), input = $(inputId);
+  if (!value) return false;
+  if ([...sel.options].some((o) => o.value === value)) {
+    sel.value = value;
+    input.hidden = true;
+    input.value = '';
+    input.classList.remove('ai-filled');
+  } else {
+    sel.value = CT.CUSTOM_OPT;
+    input.hidden = false;
+    input.value = value;
+    input.classList.add('ai-filled');
+  }
+  sel.classList.add('ai-filled');
+  return true;
+}
+
+function efTypeHint(html) {
+  const el = $('efTypeHint');
+  if (!el) return;
+  el.innerHTML = html;   // 只由本文件拼，值一律过 S.escapeHtml
+  el.hidden = false;
+}
+
+// 「再认一次」失败时说清是哪一种：文案与「模型的原话」都住在 ai.js（与 popup 共用同一份 ——
+// 从前两个面板各写一份，小面板那份停在把四种原因糊在一起的旧话上，改一处漏一处）。
+const TYPE_AI_FAIL_TEXT = AI.AI_FAIL_TEXT;
+const saidText = AI.saidText;
+
+/**
+ * 「识别能不能跑」只有一处判断（model.js 的 resolveChannel）：配了本机模型就走它，
+ * 否则要有服务端地址 + 注册口令。三个地方问的是同一件事（设置面板 / 批量识别 / 编辑弹窗），
+ * 所以说法也共用这一份 —— 从前各写一份，改一处漏一处。
+ * @returns {Promise<{ok:boolean, why:string, ch:object|null}>} ok=false 时 why 是给用户看的原因
+ */
+async function aiChannel() {
+  const cfg = await AI.loadAiCfg();
+  if (!cfg.enabled) return { ok: false, why: '「AI 兜底识别」是关着的（设置 → 🤖 识别模型）', ch: null };
+  const ch = await MODELS.resolveChannel();
+  if (ch.mode === 'none') {
+    return {
+      ok: false,
+      why: '还没有配识别用的模型（设置 → 🤖 识别模型：可以填你自己的模型，或填服务端地址 + 注册口令）',
+      ch,
+    };
+  }
+  return { ok: true, why: '', ch };
+}
+
+// 编辑弹窗里的「🤖 AI 再认一次」：这家公司的类型本地认错了，重新问一次模型。
+// 与批量识别那条路的区别（也是它存在的理由）：批量只填空，这里**覆盖本地层填的值** ——
+// 用户按这个按钮的意图就是"屏幕上这个不对，重判"。但用户在这次弹窗里自己动过的那栏仍然不动。
+async function reclassifyForEdit() {
+  const name = efCompany.value.trim();
+  if (!name) { efTypeHint('先把公司名填上，AI 才有判据。'); return; }
+  const shown = $('efTypeHint');
+  const g = await aiChannel();
+  if (!g.ok) { efTypeHint(`AI 识别没启用：${g.why}。这一栏可以自己选，或选「＋ 自定义…」写。`); return; }
+
+  const btn = $('efTypeAiBtn');
+  const label = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '识别中…';
+  efTypeHint('正在问模型…');
+  let r = null;
+  try {
+    // force：用户要的是"重判"，命中本机缓存等于按钮点了没反应
+    r = await AI.classifyCompanies([name], g.ch.sync, { force: true });
+  } catch { r = null; }
+  btn.disabled = false;
+  btn.textContent = label;
+  const hit = r?.results?.[0];
+  // 模型答了、但没被采用的那些话：这家在 results 里可能整条都没有，于是单独从 rejected 里找
+  const rej = (r?.rejected || []).find((x) => AI.typeKey(x.name) === AI.typeKey(name));
+  if (!hit) {
+    // 一句原因（按服务端给的 code）+ 模型的原话（如果有）。四种失败从前共用一句"没拿到结果"，
+    // 用户分不清是自己没配、额度用完了、还是模型答了没对上 —— 这是他按的按钮，必须说清
+    const why = AI.failText(r?.fail) || TYPE_AI_FAIL_TEXT.AI_EMPTY;
+    const said = saidText(rej?.said);
+    // 模型答了、只是写法不在候选清单里：这时候再念一遍"没给出可用的答案"是自相矛盾的
+    // （用户明明看到它答了），直接说它答的是什么、为什么没用上、怎么才能用上
+    efTypeHint(said
+      ? `AI 识别：模型答的是${said}，不在候选清单里，所以没采用。`
+        + '模型只从候选清单里挑写法 —— 想用这个写法，选「＋ 自定义…」把它加进清单再点一次；也可以自己选一个。'
+      : `AI 识别：${why}。可以自己选一个，或选「＋ 自定义…」写一个。`);
+    if (shown) shown.hidden = false;
+    return;
+  }
+  const done = [], kept = [], same = [], blank = [], off = [];
+  for (const f of ['nature', 'industry']) {
+    // 字段名走 S.TYPE_FIELDS 那一份（与导入预览、CSV 表头同一处），别再手抄一遍
+    const label = S.TYPE_FIELDS[f];
+    if (efTypeDirty[f]) { if (hit[f]) kept.push(label); continue; }
+    const cur = readTypeEditor(f === 'nature' ? 'efNature' : 'efIndustry',
+      f === 'nature' ? 'efNatureCustom' : 'efIndustryCustom').value;
+    if (!hit[f]) {
+      const raw = hit.said?.[f];
+      if (raw) off.push(`${label} 模型答的是「${S.escapeHtml(raw)}」，不在候选清单里，没采用`);
+      else blank.push(label);
+      continue;
+    }
+    if (hit[f] === cur) same.push(`${label} 模型也判成「${S.escapeHtml(hit[f])}」（与你已有的一致）`);
+    else if (setTypeEditor(f, hit[f])) done.push(label);
+  }
+  const parts = [...done.length ? [`${done.join('、')} 已按 AI 重填（会随保存一起写入）`] : [],
+    ...same, ...off,
+    // 模型说的写法用不上时，给出能走通的那一步（把那个词加成自定义取值，它才进候选清单）
+    ...off.length ? ['想用模型说的那个写法，选「＋ 自定义…」把它加进清单，再点一次'] : [],
+    ...blank.length ? [`${blank.join('、')} 模型这次没给（它只看得到公司名，判不出就留空）`] : [],
+    ...kept.length ? [`${kept.join('、')} 是你自己选的，没动`] : []];
+  efTypeHint('AI 识别：' + (parts.length ? parts.join('；') : '模型这次的结论与当前一致'));
+  if (shown) shown.hidden = false;
+}
+
+function syncTypeCustom(selId, inputId) {
+  const sel = $(selId), input = $(inputId);
+  const custom = sel.value === CT.CUSTOM_OPT;
+  input.hidden = !custom;
+  if (custom) { input.value = ''; input.focus(); }
+}
+
+// 下拉面板里那一项右边的 🗑（pickers.js 调过来）：只删**我自己加进清单的写法**，
+// 内置的 7+14 项是分类体系、与服务端识别共用，删不动（见 company-type.js 的 forgetCustomType）。
+// 删的只是清单项 —— 任何记录里的值都不动，想加回来再选一次「＋ 自定义…」就行。
+// 「选中的正是它 → 把这一栏清空」那一步由 pickers.js 做（它才知道按下去之前选的是哪个）。
+async function deleteCustomType(field, v) {
+  const r = CT.forgetCustomType(state.data, field, v);
+  // 走到这里多半是两个标签页抢着删：🗑 只在"清单里有这个值"时才画得出来
+  if (!r.removed) { efTypeHint(`「${S.escapeHtml(v)}」不在你的清单里（内置分类删不掉，也可能已经删过了）。`); return; }
+  await S.saveData(state.data);
+  const rec = state.editId ? findRecord(state.editId) : null;
+  if (rec) fillTypeEditors(rec);   // 重铺选项：删掉的那项从下拉里消失（这条记录自己的旧值仍留着一条）
+  efTypeHint(`已把「${S.escapeHtml(v)}」从你的清单里删掉，下拉里不再有它（模型也不会再答它）。`
+    + (r.stillUsed ? `还有 ${r.stillUsed} 条记录在用这个写法 —— 记录里的值一个都没动，需要的话挨条改。` : ''));
+}
+
+// 读一栏的最终值。选了「＋ 自定义…」却什么都没填 → 报错回去（不能当成"清空"：
+// 用户点那个选项的意图是"我要写一个自己的值"，静默存成空会让他以为写进去了）
+function readTypeEditor(selId, inputId) {
+  const sel = $(selId);
+  if (sel.value !== CT.CUSTOM_OPT) return { value: sel.value, bad: false };
+  const v = $(inputId).value.trim().slice(0, CT.CUSTOM_MAX_LEN);   // 上限与候选集清洗同一口径
+  return { value: v, bad: !v };
+}
+
+// —— 批量识别（主面板「🏷 识别企业类型」）——
+// 只填空：已经有值的字段一律不碰（用户手填的最高优先，这一点由 apply 那一步二次确认）。
+// 三步走，任何一步失败都不影响已经拿到的结果：① 本地库 + 规则（瞬时、离线、不花钱）
+// ② 剩下的公司去重后分批问模型（≤12 家/批，与 server/src/core.js 的上限一致）
+// ③ 用户点「应用」才落盘：一次 saveData + 一次 renderAll
+const typeModalEl = $('typeModal');
+let typeUndo = null;   // 上一次「应用」的快照（一次性撤销用）；放在模块级，关掉弹窗再打开也还能撤
+
+function tmTip(text) {
+  const el = $('tmTip');
+  el.textContent = text || '';
+  el.hidden = !text;
+}
+
+function tmProgress(html) {
+  const el = $('tmProgress');
+  if (html) { el.innerHTML = html; el.hidden = false; } else { el.innerHTML = ''; el.hidden = true; }
+}
+
+const SRC_LABEL = { lib: '本地企业库', rule: '名称规则', ai: '模型', cache: '模型（缓存）' };
+const SRC_CLASS = { lib: 'src-lib', rule: 'src-rule', ai: 'src-ai', cache: 'src-ai' };
+
+// 这一行会不会真的写进去（有一格是新的、且原值是空的）
+function typeRowWrites(r) {
+  return Boolean((r.nature && !r.was.nature) || (r.industry && !r.was.industry));
+}
+
+function renderTypePreview() {
+  const run = state.typeRun;
+  if (!run) return;
+  const rows = run.rows;
+  const writes = rows.filter(typeRowWrites);
+  $('tmPreviewWrap').hidden = rows.length === 0;
+  $('tmApplyBtn').disabled = writes.length === 0;
+  $('tmApplyBtn').textContent = writes.length ? `应用（写入 ${writes.length} 条）` : '应用';
+  if (!rows.length) { $('tmPreview').innerHTML = ''; return; }
+
+  const shown = rows.slice(0, 200);
+  // 模型说过话、但写法没对上候选集的那几行：来源格上加个说明，让"未识别"不至于看不出原因
+  const saidRows = rows.filter((r) => !r.src && (r.said?.nature || r.said?.industry));
+  $('tmPreview').innerHTML = '<table class="preview-table"><thead><tr>'
+    + '<th>公司</th><th>企业性质</th><th>行业赛道</th><th>来源</th></tr></thead><tbody>'
+    + shown.map((r) => {
+      const cell = (v) => (v ? S.escapeHtml(v) : '<span class="t3">—</span>');
+      const src = SRC_LABEL[r.src] || '未识别';
+      const said = saidText(r.said);
+      return `<tr${typeRowWrites(r) ? '' : ' class="dim"'}>`
+        + `<td title="${S.escapeHtml(r.company)}">${S.escapeHtml(cut(r.company, 22))}</td>`
+        + `<td>${cell(r.nature)}</td><td>${cell(r.industry)}</td>`
+        + `<td class="src-cell ${SRC_CLASS[r.src] || 'src-none'}"`
+        + `${said ? ` title="模型给的是${said}，不在候选清单里，所以没采用"` : ''}>${src}</td></tr>`;
+    }).join('') + '</tbody></table>'
+    + (rows.length > shown.length ? `<div class="report-sub">…… 还有 ${rows.length - shown.length} 条</div>` : '')
+    + (saidRows.length ? `<div class="report-sub">另有 ${saidRows.length} 家，模型给了不在候选清单里的写法（把鼠标停在「未识别」上看原话）</div>` : '');
+}
+
+// 从记录里挑出「还缺类型」的那些，起一份可以反复改的草稿（was 记住原值，用来判断"要不要写"）
+function typeDraft(retryOnly) {
+  if (retryOnly && state.typeRun) return state.typeRun.rows.map((r) => ({ ...r, was: { ...r.was } }));
+  return (state.data?.records || [])
+    .filter((r) => !r.nature || !r.industry)
+    .map((r) => ({
+      id: r.id, company: String(r.company || '').trim(), src: '',
+      nature: r.nature || '', industry: r.industry || '',
+      was: { nature: r.nature || '', industry: r.industry || '' },
+    }));
+}
+
+async function runTypeClassify({ retryOnly = false } = {}) {
+  const rows = typeDraft(retryOnly);
+  state.typeRun = { rows };
+  $('tmRetryBtn').hidden = true;
+  $('tmUndoBtn').hidden = !typeUndo;
+  tmTip('');
+
+  // 认不出来的先放下：没有公司名就没有任何判据（缩写、代号都救不了）
+  const pending = () => rows.filter((r) => r.company && (!r.nature || !r.industry));
+  const noName = rows.filter((r) => !r.company).length;
+
+  // ① 本地：映射库 → 关键词规则。能定的当场定，这一轮不花一分钱
+  for (const r of pending()) {
+    const g = CT.guessCompanyType(r.company);
+    if (!r.nature && g.nature) { r.nature = g.nature; r.src = g.src; }
+    if (!r.industry && g.industry) { r.industry = g.industry; r.src = g.src; }
+  }
+  renderTypePreview();
+
+  // ② 模型：剩下的公司去重后分批问（classifyCompanies 内部还会先查本机缓存）
+  const rest = pending();
+  const localDone = rows.filter(typeRowWrites).length;
+  let aiDone = 0, aiFailed = 0, aiReady = false;
+  if (rest.length) {
+    const g = await aiChannel();
+    const why = g.why;
+    if (why) {
+      tmProgress(`本机认出了 <b>${localDone}</b> 条，还有 <b>${rest.length}</b> 条要问模型 —— 但${why}。认不出的会留空，随时可以自己填。`);
+    } else {
+      aiReady = true;
+      const names = [...new Set(rest.map((r) => r.company))];
+      tmProgress(`本机认出了 <b>${localDone}</b> 条，正在问模型：<b>0</b>/${names.length} 家公司…`);
+      const res = await AI.classifyCompanies(names, g.ch.sync, {
+        onProgress: ({ done, total, from }) => {
+          if (from === 'start' || from === 'ai') {
+            tmProgress(`本机认出了 <b>${localDone}</b> 条，正在问模型：<b>${done}</b>/${total} 家公司…`);
+          }
+        },
+      });
+      const byKey = new Map();
+      for (const it of res.results) byKey.set(AI.typeKey(it.name), it);
+      const rejByKey = new Map((res.rejected || []).map((x) => [AI.typeKey(x.name), x]));
+      for (const r of rest) {
+        const key = AI.typeKey(r.company);
+        const hit = byKey.get(key);
+        if (!hit) {
+          // 模型答了、但写法没对上候选集：把它的原话记在行上，预览表里说明（否则只显示"未识别"）
+          const rej = rejByKey.get(key);
+          if (rej) r.said = { ...(r.said || {}), ...rej.said };
+          continue;
+        }
+        // 二次校验（ai.js 那边已经按本次候选集卡过一遍）：候选集 = 枚举 ∪ 本机自定义值，
+        // 不能再用裸枚举 —— 用户自定义的「银行」会被这里挡掉，等于白加
+        if (!r.nature && CT.isAllowedType('nature', hit.nature, state.data?.customTypes)) { r.nature = hit.nature; r.src = hit.from; }
+        if (!r.industry && CT.isAllowedType('industry', hit.industry, state.data?.customTypes)) { r.industry = hit.industry; r.src = hit.from; }
+        // 没被采用的那一栏的原话（说清"AI 答了什么、为什么没用上"）
+        if (hit.said) r.said = { ...(r.said || {}), ...hit.said };
+      }
+      aiDone = rows.filter((r) => r.src === 'ai' || r.src === 'cache').length;
+      aiFailed = rest.filter((r) => !r.src).length;
+      tmProgress('');
+    }
+  } else {
+    tmProgress(`本机就能认全：<b>${localDone}</b> 条都认出来了，没有需要问模型的。`);
+  }
+
+  renderTypePreview();
+  const left = rows.filter((r) => !r.nature || !r.industry).length;
+  // 「重试」只在"还有没认出来的、而且模型这条路当时是通的"时才给 ——
+  // 没配模型时重试一百次也还是同样的空，那不该是个按钮
+  $('tmRetryBtn').hidden = !(aiReady && left > 0);
+  const parts = [`共 ${state.data.records.length} 条记录，其中 <b>${rows.length}</b> 条还缺企业类型（已经填过的一律不动）`];
+  if (localDone) parts.push(`本地认了 <b>${localDone}</b> 条`);
+  if (aiDone) parts.push(`模型补了 <b>${aiDone}</b> 条`);
+  if (left) parts.push(`还有 <b>${left}</b> 条没认出来${noName ? `（其中 ${noName} 条没填公司名）` : ''}，可以自己填`);
+  if (aiFailed) parts.push(`模型这轮没答上 <b>${aiFailed}</b> 条，可点「重试」`);
+  $('tmDesc').innerHTML = parts.join(' · ') + '。';
+  if (!$('tmApplyBtn').disabled) tmTip('点「应用」才会写入 —— 写进去的是上面这张表里新填的那些格。');
+}
+
+async function openTypeModal() {
+  typeModalEl.hidden = false;
+  $('tmApplyBtn').disabled = true;
+  $('tmRetryBtn').hidden = true;
+  $('tmUndoBtn').hidden = !typeUndo;
+  $('tmPreviewWrap').hidden = true;
+  $('tmPreview').innerHTML = '';
+  tmProgress('');
+  tmTip('');
+  state.typeRun = null;
+  await runTypeClassify();
+}
+
+async function applyTypeClassify() {
+  const run = state.typeRun;
+  if (!run) return;
+  const want = new Map(run.rows.map((r) => [r.id, r]));
+  let data;
+  try { data = await S.loadData(); } catch (err) { alert('读取数据失败：' + err?.message); return; }
+  const snap = [];
+  for (const rec of data.records) {
+    const row = want.get(rec.id);
+    if (!row) continue;
+    // 落盘前再查一遍"这一格还是空的吗"：面板打开期间用户可能已经手动填过了，
+    // 而手动填的永远优先于识别结果
+    const nature = rec.nature || row.nature || '';
+    const industry = rec.industry || row.industry || '';
+    if (nature === (rec.nature || '') && industry === (rec.industry || '')) continue;
+    snap.push({ id: rec.id, nature: rec.nature || '', industry: rec.industry || '' });
+    rec.nature = nature;
+    rec.industry = industry;
+    rec.updatedAt = S.nextStamp(rec.updatedAt);   // 顶戳：不顶的话这台机器的新值推不上去
+  }
+  if (!snap.length) { tmTip('没有要写入的改动。'); return; }
+  try { await S.saveData(data); } catch (err) { alert(saveFailMessage(err)); return; }
+  state.data = data;
+  typeUndo = { snap };
+  $('tmUndoBtn').hidden = false;
+  $('tmApplyBtn').disabled = true;
+  $('tmApplyBtn').textContent = '应用';
+  // 表里那几格已经落盘了，草稿跟着挪一格，免得"再点一次应用"又写一遍
+  for (const row of run.rows) {
+    const hit = snap.find((s) => s.id === row.id);
+    if (hit) row.was = { nature: row.nature, industry: row.industry };
+  }
+  renderTypePreview();
+  tmTip(`已写入 ${snap.length} 条。可以点「撤销本次识别」一次性回滚。`);
+  renderAll();
+}
+
+async function undoTypeClassify() {
+  const undo = typeUndo;
+  if (!undo) return;
+  typeUndo = null;
+  let data;
+  try { data = await S.loadData(); } catch (err) { alert('读取数据失败：' + err?.message); return; }
+  let n = 0;
+  for (const s of undo.snap) {
+    const rec = data.records.find((r) => r.id === s.id);
+    if (!rec) continue;
+    // 撤销也要顶戳：否则服务端那份（识别后已推上去、时间戳更新）会在下一轮把旧值又盖回来
+    rec.nature = s.nature;
+    rec.industry = s.industry;
+    rec.updatedAt = S.nextStamp(rec.updatedAt);
+    n++;
+  }
+  if (!n) { renderAll(); return; }
+  try { await S.saveData(data); } catch (err) { alert('撤销失败：' + err?.message); return; }
+  state.data = data;
+  // 预览表跟着退回识别前的样子（不然界面上还写着"已写入 N 条"）
+  if (state.typeRun) {
+    for (const row of state.typeRun.rows) {
+      const s = undo.snap.find((x) => x.id === row.id);
+      if (!s) continue;
+      row.nature = s.nature;
+      row.industry = s.industry;
+      row.src = '';
+    }
+    renderTypePreview();
+  }
+  $('tmUndoBtn').hidden = true;
+  tmTip(`已撤销 ${n} 条：企业类型回到识别之前的样子。`);
+  renderAll();
+}
+
+$('typeBtn').addEventListener('click', openTypeModal);
+$('tmApplyBtn').addEventListener('click', applyTypeClassify);
+$('tmRetryBtn').addEventListener('click', () => runTypeClassify({ retryOnly: true }));
+$('tmUndoBtn').addEventListener('click', undoTypeClassify);
+$('typeFilter').addEventListener('change', () => {
+  state.typeFilter = $('typeFilter').value;
+  renderAll();
+});
+for (const [field, selId, inputId] of [['nature', 'efNature', 'efNatureCustom'], ['industry', 'efIndustry', 'efIndustryCustom']]) {
+  $(selId).addEventListener('change', () => {
+    syncTypeCustom(selId, inputId);
+    // 一改就归用户：AI 填过的高亮随之消失
+    $(selId).classList.remove('ai-filled');
+    $(inputId).classList.remove('ai-filled');
+    efTypeDirty[field] = true;                // 并记下「这一栏是用户选的」→ 后面的 AI 重认不许动它
+  });
+  // 打开下拉时铺的是自建列表（原生 <select> 的选项行里塞不进 🗑）。
+  // 只有**自己加进清单的写法**后面才长 🗑；点了它就删清单，选中的正是它时把这一栏清空
+  attachTypeSelect($(selId), {
+    isCustom: (v) => CT.isCustomType(state.data, field, v),
+    onDelete: (v) => deleteCustomType(field, v),
+  });
+}
+$('efTypeAiBtn').addEventListener('click', reclassifyForEdit);
+
+// 三个固定的日期时间框改用自建日历（原生那份面板里没有"确定"，选完只能点别处把它收起来 ——
+// 自己画的这份是"改完「分」就算选完"）。截止节点那几行是动态加的，各自在 addDeadlineRow 里挂
+attachDateInput($('efAppliedAt'));
+attachDateInput($('bmDatetime'));
+attachDateInput($('ivAt'));
+
 async function deleteBatch() {
   const recs = [...state.batchSel].map(findRecord).filter(Boolean);
   if (!recs.length) return;
@@ -1215,11 +1751,8 @@ async function deleteBatch() {
 
 
 // ---------- 导入 / 导出 ----------
-function stamp() {
-  const ts = new Date();
-  const pad = (n) => String(n).padStart(2, '0');
-  return `${ts.getFullYear()}${pad(ts.getMonth() + 1)}${pad(ts.getDate())}-${pad(ts.getHours())}${pad(ts.getMinutes())}`;
-}
+// 文件名里的时间戳：实现搬到了 shared.js（手机端导出日历文件时要用同一份）
+const stamp = S.fileStamp;
 
 // 导出带上 meta（版本 / 时间 / 设备），导入时能告诉用户"这份备份来自哪台机器"
 async function exportJson() {
@@ -1435,7 +1968,7 @@ function readColumnSelects() {
 function tableWarnings(p, res, columns) {
   const warns = [];
   if (!columns.length) {
-    warns.push('一个表头都没认出来。<b>请回到表格里把表头改成本工具认得的名字</b>（公司 / 岗位 / 状态 / 轮次 / 结果 / 投递日期 / 最近截止 / 链接 / 备注 / JD），或者连表头一起选中再复制；也可以在下面的下拉里逐列手动指定。');
+    warns.push('一个表头都没认出来。<b>请回到表格里把表头改成本工具认得的名字</b>（公司 / 岗位 / 状态 / 轮次 / 结果 / 企业类型 / 投递日期 / 最近截止 / 链接 / 备注 / JD），或者连表头一起选中再复制；也可以在下面的下拉里逐列手动指定。');
   }
   if (columns.length && !res.records.length) warns.push('没有可导入的行 —— 请确认是否只复制了表头。');
   if (res.dupRows) warns.push(`有 ${res.dupRows} 行与前面的行是同一个岗位（同公司 + 同岗位 + 同链接），会合并成一条。`);
@@ -1446,6 +1979,10 @@ function tableWarnings(p, res, columns) {
   if (res.badDates.length) {
     const cells = res.badDates.map((x) => `<code>${S.escapeHtml(x.value)}</code>`).join('、');
     warns.push(`日期没认出来：${cells}。这些格子会留空（本机已有的记录保留原来的日期）。想带进来请把表格里的写法改成 <code>2026-03-01</code> 或 <code>2026/3/1 18:11</code> 这样。`);
+  }
+  if (res.badTypes?.length) {
+    const cells = res.badTypes.map((x) => `<code>${S.escapeHtml(x.value)}</code>`).join('、');
+    warns.push(`企业类型没认出来：${cells}。这些格子会留空（本机已有的记录保留原来的企业类型，不会被抹掉）。写法请用「央企」「汽车/新能源」这类既定取值；也可以把「企业性质」与「行业赛道」分成两列来写。`);
   }
   if (res.droppedDeadlines) warns.push(`有 ${res.droppedDeadlines} 个截止节点本机已经标记完成，表格里的同名节点不会再导进来。`);
   if (p.truncated) warns.push(`这份表格太大，只读了前 ${p.rows.length} 行（还有 ${p.truncated} 行没读）。请分批导入。`);
@@ -1820,26 +2357,43 @@ function lastErrorField(cfg) {
 // 开关是**每台设备各自的**（存在 chrome.storage.local，不进云同步）：它同时决定了"要不要把页面
 // 候选串发出去"，这种决定不该被另一台设备的设置覆盖。缓存同理，是这台机器的、清掉重来不影响别人
 // —— 服务端那边根本没有第二份（识别结果不落库，见 server/src/core.js 的 AI_MAX_CALLS_PER_DAY）。
-// 「识别能不能跑」看两件事：开关开着 + 通道通着（服务端地址 + **注册口令**）。
+// 「识别能不能跑」看两件事：开关开着 + 通道通着。通道只有一处判断（model.js 的 resolveChannel）：
+//   local = 自己配了模型（默认就走它，请求由这台电脑直接发出）
+//   cloud = 没配自己的模型，但服务端地址 + **注册口令**都在（原来的那条路）
+//   none  = 两条都不成立 —— 这是"还没配"，不是错误，界面据此把人指到该去的地方
 // 同步口令既不是必需的、也不是备选：识别只把这一页的候选串问一次模型，不上传也不拉取记录，
-// 所以「同步口令填了、注册口令空着」时识别照样不通；「启用云同步」那个勾选框更是无关
+// 所以「同步口令填了、注册口令空着」时云端那条路照样不通；「启用云同步」那个勾选框更是无关
 // （见 popup.js 的 maybeAiSuggest）。
-// 徽标与状态行只在这里算一份，勾选框变化、保存云同步设置、打开设置面板都走它，
-// 免得三处各写一套判断
+// 徽标与状态行只在这里算一份，勾选框变化、保存云同步设置、改动模型配置、打开设置面板都走它，
+// 免得四处各写一套判断
 async function renderAiSection(note = '') {
   const cfg = await AI.loadAiCfg();
-  const sync = await SY.loadSync();
   const on = !!cfg.enabled;
-  const ready = !!(sync.endpoint && sync.enrollKey);
+  const ch = await MODELS.resolveChannel();
+  const live = ch.mode !== 'none';
   $('stAiEnabled').checked = on;
   const badge = $('stAiBadge');
-  badge.textContent = !on ? '未启用' : (ready ? '已启用' : '待配置');
-  badge.className = 'set-badge' + (on && ready ? '' : ' warn');
-  if (note) return setStatus('stAiStatus', note, on && ready ? 'ok' : '');
+  // 四态：关着 / 走自己的模型 / 走云端 / 还没有可用的模型。
+  // 「云端模型」这个写法是必要的：以前只认云端一条路，所以没填口令时一律显示"待配置"，
+  // 现在填了自己的模型就通了，徽标得说实话 —— 用户分得清"走的是谁的额度"
+  badge.textContent = !on ? '未启用' : (ch.mode === 'local' ? '本机模型' : (ch.mode === 'cloud' ? '云端模型' : '待配置'));
+  badge.className = 'set-badge' + (on && live ? '' : ' warn');
+  if (note) return setStatus('stAiStatus', note, on && live ? 'ok' : '');
   if (!on) return setStatus('stAiStatus', '已关闭：不会再把页面信息发给模型');
-  if (!ready) return setStatus('stAiStatus', '还需要服务端地址与注册口令：在上面「☁ 云同步」里填好即可 —— 识别不需要同步口令，也不必勾选「启用云同步」');
+  // 两套缓存分开数、分开说：一个是"岗位页"的、一个是"公司"的，用途与键都不同（见 ai.js 里那两段）。
+  // 两条路共用这两份缓存（键里带着"是哪个模型答的"，见 ai.js 的 mk），所以两种走法都报一下
   const n = await AI.cacheCount();
-  setStatus('stAiStatus', n ? `本机已缓存 ${n} 个岗位页的识别结果` : '本机还没有缓存（第一次识别后就有）');
+  const t = await AI.typeCacheCount();
+  const cacheText = (n || t)
+    ? `本机已缓存 ${[n ? `${n} 个岗位页` : '', t ? `${t} 家公司` : ''].filter(Boolean).join(' · ')} 的识别结果`
+    : '本机还没有缓存（第一次识别后就有）';
+  if (ch.mode === 'local') {
+    return setStatus('stAiStatus', `走本机模型：${MODELS.normalizeBaseUrl(ch.cfg.baseUrl)} · ${ch.cfg.model}（由这台电脑直接发出，不经过云端）｜${cacheText}`);
+  }
+  if (ch.mode === 'cloud') {
+    return setStatus('stAiStatus', `走云端模型：用「☁ 云同步」里的注册口令 —— 识别不需要同步口令，也不必勾选「启用云同步」｜${cacheText}`);
+  }
+  return setStatus('stAiStatus', '还没有可用的识别模型：点下面「配置模型」填一个你自己的模型（不需要任何口令），或在上面「☁ 云同步」里填好服务端地址 + 注册口令');
 }
 
 $('stAiEnabled').addEventListener('change', async () => {
@@ -1849,8 +2403,128 @@ $('stAiEnabled').addEventListener('change', async () => {
 });
 
 $('stAiClear').addEventListener('click', async () => {
+  // 两套缓存一起清：这个按钮叫「清空识别缓存」，用户心里没有"两种缓存"这回事
   const n = await AI.clearCache();
-  setStatus('stAiStatus', `已清空 ${n} 条本机缓存（下次打开这些页面会重新问一次模型）`, 'ok');
+  const t = await AI.clearTypeCache();
+  setStatus('stAiStatus', `已清空 ${n} 条岗位缓存、${t} 条企业类型缓存（下次会重新问一次模型）`, 'ok');
+});
+
+// ---------- 模型配置（识别请求发给谁） ----------
+// 这个弹窗与设置面板的脾气不同：**显式保存**，脚注那个按钮写「关闭」而不是「完成」。
+// 原因是它要动跨域授权 —— 浏览器的授权弹窗必须由一次明确的点击触发（用户手势），
+// 所以"点保存/测试"和"存下配置"是同一个动作，不能像设置面板那样"关掉就算存了"。
+const modelModal = $('modelModal');
+
+function setKeyVisible(on) {
+  $('mdApiKey').type = on ? 'text' : 'password';
+  $('mdShowKey').textContent = on ? '隐藏' : '显示';
+}
+
+// 表单 → 配置。保存与测试共用这一份读法，免得两处对"地址该长什么样"的理解不一样
+function readModelForm() {
+  return {
+    baseUrl: MODELS.normalizeBaseUrl($('mdBaseUrl').value),
+    apiKey: $('mdApiKey').value.trim(),
+    model: $('mdModel').value.trim(),
+    enabled: $('mdEnabled').checked,
+  };
+}
+
+// 「将调用：…」那一行。两件事要当场说清：① 那条整路径是你填的、工具把它接在了哪儿
+// （填 …/v1 或整条 …/chat/completions 都行，最后跑的是同一个地址）；② 填的地址压根不是
+// OpenAI 兼容路的（Anthropic 那种），现在就说，别等发出去、拿回一个看不懂的回包再猜
+function renderModelCallUrl() {
+  const raw = $('mdBaseUrl').value;
+  const box = $('mdCallUrl');
+  const warn = MODELS.endpointWarning(raw);
+  const url = MODELS.callUrl(raw);
+  box.className = 'mf-hint' + (warn ? ' warn' : '');
+  if (warn) return void (box.textContent = warn);
+  box.textContent = url ? `将调用：${url}` : '';
+}
+
+async function openModelModal() {
+  const cfg = await MODELS.loadModelCfg();
+  // Key 要回填：这里是"看看我当初填了什么、改一改"的地方。它只在这台机器上、这个输入框里
+  // （type=password，要按「显示」才看得见），关掉弹窗时会被抹掉（见 closeModelModal）
+  $('mdBaseUrl').value = cfg.baseUrl || '';
+  $('mdApiKey').value = cfg.apiKey || '';
+  $('mdModel').value = cfg.model || '';
+  $('mdEnabled').checked = !!cfg.enabled;
+  setKeyVisible(false);
+  renderModelCallUrl();
+  setStatus('mdStatus', '');
+  modelModal.hidden = false;
+}
+
+// 关掉就把输入框里的 Key 抹掉，不在页面上留一串明文挂着（下次打开会重新读回来）
+function closeModelModal() {
+  if (modelModal.hidden) return;
+  $('mdApiKey').value = '';
+  setKeyVisible(false);
+  setStatus('mdStatus', '');
+  modelModal.hidden = true;
+  renderAiSection();   // 徽标与状态行跟着这次改动更新
+}
+
+$('stModelBtn').addEventListener('click', openModelModal);
+$('mdShowKey').addEventListener('click', () => setKeyVisible($('mdApiKey').type === 'password'));
+$('mdBaseUrl').addEventListener('input', renderModelCallUrl);
+
+$('mdSave').addEventListener('click', async () => {
+  const next = readModelForm();
+  // 一眼就不是 OpenAI 兼容路的地址，先别存：存下去只会让"配好了却不好用"更难查
+  const warn = MODELS.endpointWarning($('mdBaseUrl').value);
+  if (warn && next.enabled) return setStatus('mdStatus', `没法保存：${warn}`, 'err');
+  // 授权申请必须是这个点击处理器里的第一件事：浏览器只认用户手势，前面只要 await 过一次，
+  // 授权弹窗就不会出现（见 model.js 的 requestHostPermission）。已经授权过的话它立刻返回 true，不会再弹
+  const asking = next.enabled && next.baseUrl ? MODELS.requestHostPermission(next.baseUrl) : null;
+  if (asking) setStatus('mdStatus', '正在请求浏览器授权…');
+  const granted = asking ? await asking : true;
+
+  const saved = await MODELS.saveModelCfg(next);
+  $('mdBaseUrl').value = saved.baseUrl;   // 归一回填（去掉尾部斜杠、去掉整条 /chat/completions）
+  renderModelCallUrl();
+  renderAiSection();
+  if (!next.enabled) return setStatus('mdStatus', '已保存：本机模型没启用，识别照旧走云端（需要注册口令）', 'ok');
+  if (!MODELS.modelReady(saved)) {
+    return setStatus('mdStatus', '已保存，但还差内容：接口地址、API Key、模型名称三项都填上，识别才会走本机', 'err');
+  }
+  if (!granted) {
+    return setStatus('mdStatus', `已保存，但浏览器没有允许访问 ${MODELS.hostLabel(saved.baseUrl)}：识别会停在这一步。再点一次「保存」可以重新申请`, 'err');
+  }
+  setStatus('mdStatus', '已保存：识别现在走你自己的模型，不经过云端', 'ok');
+});
+
+$('mdTest').addEventListener('click', async () => {
+  const cfg = readModelForm();
+  if (!cfg.baseUrl || !cfg.apiKey || !cfg.model) {
+    return setStatus('mdStatus', '把接口地址、API Key、模型名称三项都填上再测', 'err');
+  }
+  const warn = MODELS.endpointWarning($('mdBaseUrl').value);
+  if (warn) return setStatus('mdStatus', warn, 'err');
+  // 同一次点击里先要授权，理由同上
+  const granted = await MODELS.requestHostPermission(cfg.baseUrl);
+  if (!granted) return setStatus('mdStatus', `浏览器没有允许访问 ${MODELS.hostLabel(cfg.baseUrl)}：先同意授权才能测`, 'err');
+  setStatus('mdStatus', '正在问模型（最多等 60 秒）…');
+  // 用的是**表单里现在填的**值，不是已保存的：改完地址想先试试，不该逼人先保存一遍
+  const r = await MODELS.testLocal(cfg);
+  const secs = `${(r.ms / 1000).toFixed(1)} 秒`;
+  if (r.ok) return setStatus('mdStatus', `通了（${secs}）：${r.note} —— 保存后识别才会用它`, 'ok');
+  setStatus('mdStatus', `没通（${secs}）：${r.error}`, 'err');
+});
+
+$('mdClear').addEventListener('click', async () => {
+  if (!confirm('清除本机模型配置？\n\n清除后识别回到云端那条路（需要「☁ 云同步」里的注册口令）。\nAPI Key 会从这台电脑的浏览器里删掉。')) return;
+  await MODELS.saveModelCfg({ ...MODELS.DEFAULT_MODEL });
+  $('mdBaseUrl').value = '';
+  $('mdApiKey').value = '';
+  $('mdModel').value = '';
+  $('mdEnabled').checked = false;
+  setKeyVisible(false);
+  renderModelCallUrl();
+  renderAiSection();
+  setStatus('mdStatus', '已清除：识别回到云端那条路', 'ok');
 });
 
 const settingsModal = $('settingsModal');
@@ -2035,21 +2709,22 @@ async function closeSettings() {
 
 // ---------- 模态框通用 ----------
 // 有「关闭前要收尾」的模态框走各自的关闭函数（设置弹窗要保存配置、面经弹窗要问一句别丢了没保存的内容），
-// 其余的一律直接 hidden。三条关闭路径（×/关闭按钮、点空白处、Escape）共用这一份判断。
+// 其余的一律直接 hidden。两条关闭路径（×/关闭按钮、Escape）共用这一份判断。
+// **点空白处不再关闭**：弹窗里往往填了一半，点一下旁边就没了比"多点一下 ×"糟得多（用户明确要求常驻）。
 function closeBackdrop(bd) {
-  if (bd === settingsModal) closeSettings();
+  closePicker();   // 弹窗上开着的下拉/日历浮层挂在 body 上，得跟着一起收，不然会孤零零留在屏幕上
+  if (bd === modelModal) closeModelModal();
+  else if (bd === settingsModal) closeSettings();
   else if (bd === ivModal) closeIvModal();
   else bd.hidden = true;
 }
 document.querySelectorAll('[data-close]').forEach((b) =>
   b.addEventListener('click', () => closeBackdrop(b.closest('.backdrop'))));
-document.querySelectorAll('.backdrop').forEach((bd) =>
-  bd.addEventListener('click', (e) => {
-    if (e.target !== bd) return;
-    closeBackdrop(bd);
-  }));
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
+  // 模型配置是叠在设置面板上的（从设置面板里点开、设置面板不关）：Esc 只收上面那一层，
+  // 不然按一下 Esc 连设置面板一起没了，像是什么都没保存就走了
+  if (!modelModal.hidden) { closeBackdrop(modelModal); return; }
   let closed = false;
   document.querySelectorAll('.backdrop').forEach((bd) => {
     if (!bd.hidden) { closeBackdrop(bd); closed = true; }
@@ -2095,12 +2770,23 @@ chrome.storage.onChanged.addListener((changes, area) => {
 });
 
 // ---------- 启动 ----------
+// 顶栏高度不是个常数：窗口一窄，右上角那排按钮会折成两行，顶栏立刻从 59 长到 101。
+// 常驻的批量条停在这个高度下面（CSS 的 --topbar-h），写死 px 迟早对不上 —— 对不上的表现是
+// 「批量条被顶栏压住一半」。所以量一次写进变量，窗口尺寸变了再量。
+function syncTopbarHeight() {
+  const bar = document.querySelector('.topbar');
+  if (!bar) return;
+  const h = Math.ceil(bar.getBoundingClientRect().height);
+  if (h > 0) document.documentElement.style.setProperty('--topbar-h', h + 'px');
+}
+
 async function init() {
   state.data = await S.loadData();
   $('todayLabel').textContent = S.todayLabel();
   initSelects();
   syncViewToggle();
   $('sortSelect').value = state.sort;
+  window.addEventListener('resize', syncTopbarHeight);   // renderAll 里也会量一次
   renderAll();
   // 版本横幅：扩展已更新但本页面还是旧代码时提示刷新
   try {

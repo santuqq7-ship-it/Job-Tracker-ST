@@ -1,23 +1,21 @@
-// transfer.js — 记录搬迁（导出 / 导入合并）与手机日历文件生成
+// transfer.js — 记录搬迁（导出 JSON / 导入合并）与表格导入
 //
 // 这个模块只做纯逻辑：不碰 chrome.*、不碰 DOM，因此可以直接在 Node 里跑单测
 // （见 tools/test-transfer.mjs）。面板负责把结果落盘与下载。
 //
-// 两件事：
 //   一、导入导出：把记录导成 JSON，在另一台机器上导入时**合并**而不是覆盖。
 //       合并规则见 mergeImport 的注释（记录级 LWW + 字段补空 + 节点/历史并集 + 同岗位去重）。
-//   二、手机日历：把「有截止时间且未完成」的节点导成 .ics，手机导入后由系统日历
-//       在本地到点提醒（不需要浏览器开着、不需要服务端、不需要装额外 App）。
-//       反复导出再导入时按 UID 更新同一事件，并把上次导出过、现在已经失效的事件标为取消。
+//   二、手机日历：**已搬到 calendar-ics.js**（手机端也要导出这份文件，而手机壳子是整份
+//       缓存的，不该把本模块与 company-type.js 一起背上去）。本模块只转发那几个名字，
+//       dashboard.js 与 tools/test-transfer.mjs 照旧 import 这里。
+//   三、表格导入：把飞书 / 腾讯文档 / WPS / Excel 的投递表搬进来。
 //
 // 注意：服务端那套「日历订阅」用的是另一份实现（server/src/core.js 的 buildIcs）——
-// 订阅版输出的是**一份整体日历**，文件版需要 SEQUENCE/STATUS:CANCELLED 这类
-// 「更新与撤销」语义，两者刻意分开。若将来要统一，把公共原语（转义/折行/时间戳）
-// 抽到根目录再由两边共用。
+// 订阅版输出的是**一份整体日历**，文件版（calendar-ics.js）需要 SEQUENCE/STATUS:CANCELLED
+// 这类「更新与撤销」语义，两者刻意分开。
 import * as S from './shared.js';
+import * as CT from './company-type.js';
 
-export const CALENDAR_NAME = '投递管家';
-export const CALENDAR_KEY = 'jobTrackerCalendar';  // chrome.storage.local 里的键（导出快照）
 export const EXPORT_APP = '投递状态管家';
 
 // ==================== 一、导出 / 导入 ====================
@@ -99,6 +97,11 @@ export function normalizeRecord(raw) {
     jd: str(r.jd),
     sourceTitle: str(r.sourceTitle),
     notes: str(r.notes),
+    // 企业类型两个字段：原样透传（只 trim），**不往枚举上收敛** ——
+    // 用户可以在编辑弹窗里「＋ 自定义」写枚举外的值，收敛会把人家自己写的吃掉。
+    // 收敛只发生在自动识别那几层（本地库/规则/模型/表格导入）。
+    nature: str(r.nature).trim(),
+    industry: str(r.industry).trim(),
     status: S.normalizeStatus(r.status),
     stage: r.stage || null,
     result: r.result || null,
@@ -154,10 +157,6 @@ function mergeFields(winner, loser) {
   if (out.status !== S.STATUS.INTERVIEW) out.stage = null;
   if (out.status !== S.STATUS.ENDED) out.result = null;
   return out;
-}
-
-function byDatetime(a, b) {
-  return String(a.datetime || '').localeCompare(String(b.datetime || '')) || String(a.id).localeCompare(String(b.id));
 }
 
 /**
@@ -281,170 +280,14 @@ export function mergeImport(local, incoming, { now = Date.now() } = {}) {
 }
 
 // ==================== 二、手机日历（.ics 文件导入） ====================
-
-// 哈希实现搬到了 shared.js（S.fnv32）：截止节点的确定性 id 也要用它。
-// 输出与原来的局部实现逐字节一致，手机上已订阅的日历 UID 不会变。
-const fnv = S.fnv32;
-
-// 事件 UID：由「岗位身份 + 节点名 + 同名序号」推出，不含时间 ——
-// 于是改截止时间 = 更新同一个事件，不会在手机上多出一条。
-export function calendarUid(rec, label, ordinal) {
-  const base = `${S.recordKey(rec)}|${label}|${ordinal}`;
-  return `${fnv(base)}${fnv(base + '#salt')}@jobtracker`;
-}
-
-function calendarDescription(rec, dl) {
-  const parts = [];
-  parts.push(`状态：${rec.status || '筛选中'}`);
-  if (rec.stage && rec.status === S.STATUS.INTERVIEW) parts.push(`轮次：${rec.stage}`);
-  if (rec.result && rec.status === S.STATUS.ENDED) parts.push(`结果：${rec.result}`);
-  parts.push(`投递：${S.fmtDateTime(rec.appliedAt)}`);
-  if (rec.notes) parts.push(`备注：${rec.notes}`);
-  parts.push(`节点：${dl.label || '截止'}`);
-  if (rec.url) parts.push(rec.url);
-  return parts.join('\n');
-}
-
-/**
- * 从记录里挑出要进日历的节点：**只含有截止时间且未完成**的节点，
- * 没有截止时间的岗位不会进日历。
- */
-export function calendarItems(records) {
-  const items = [];
-  for (const rec of records || []) {
-    const pend = (rec.deadlines || []).filter((d) => d && !d.done && Date.parse(d.datetime));
-    if (!pend.length) continue;
-    const ordinals = new Map();
-    for (const d of [...pend].sort(byDatetime)) {
-      const label = d.label || '截止节点';
-      const n = ordinals.get(label) || 0;
-      ordinals.set(label, n + 1);
-      items.push({
-        uid: calendarUid(rec, label, n),
-        dt: Date.parse(d.datetime),
-        label,
-        summary: [rec.company, rec.position, label].filter(Boolean).join(' · '),
-        description: calendarDescription(rec, d),
-        url: rec.url || '',
-      });
-    }
-  }
-  return items.sort((a, b) => a.dt - b.dt || a.uid.localeCompare(b.uid));
-}
-
-// ---------- ICS 原语（RFC 5545） ----------
-function icsEscape(s) {
-  return String(s ?? '')
-    .replace(/\\/g, '\\\\').replace(/;/g, '\\;').replace(/,/g, '\\,')
-    .replace(/\r?\n/g, '\\n');
-}
-
-// 按 75 字节折行（中文 3 字节，必须按字节算；续行以空格开头）
-function foldLine(line) {
-  const enc = new TextEncoder();
-  if (enc.encode(line).length <= 73) return line;
-  let out = '', cur = '', curBytes = 0;
-  for (const ch of line) {
-    const b = enc.encode(ch).length;
-    if (curBytes + b > 73) { out += cur + '\r\n '; cur = ''; curBytes = 0; }
-    cur += ch; curBytes += b;
-  }
-  return out + cur;
-}
-
-function icsStamp(ms) {
-  const d = new Date(ms);
-  const pad = (n) => String(n).padStart(2, '0');
-  return `${d.getUTCFullYear()}${pad(d.getUTCMonth() + 1)}${pad(d.getUTCDate())}T${pad(d.getUTCHours())}${pad(d.getUTCMinutes())}${pad(d.getUTCSeconds())}Z`;
-}
-
-// 提前多久提醒（分钟）：与扩展内的两档保持一致
-export const ALARMS = [24 * 60, 60];
-
-/**
- * 生成 .ics 文本。items 里可以混入 cancelled 事件（用来撤销上次导入的旧节点）。
- * 时间一律用 UTC（带 Z）——手机在任何时区都能正确换算，也避免了 TZID 兼容问题。
- */
-export function buildCalendarIcs(items, { now = Date.now(), calName = CALENDAR_NAME, prodId = '-//投递状态管家//CN' } = {}) {
-  const lines = [
-    'BEGIN:VCALENDAR',
-    'VERSION:2.0',
-    `PRODID:${prodId}`,
-    'CALSCALE:GREGORIAN',
-    'METHOD:PUBLISH',
-    `X-WR-CALNAME:${icsEscape(calName)}`,
-    'X-WR-TIMEZONE:Asia/Shanghai',
-  ];
-  for (const it of items || []) {
-    const dt = Number(it.dt) || 0;
-    if (!dt) continue;
-    lines.push('BEGIN:VEVENT');
-    lines.push(`UID:${icsEscape(it.uid)}`);
-    lines.push(`DTSTAMP:${icsStamp(now)}`);
-    lines.push(`SEQUENCE:${Math.max(0, Number(it.seq) || 0)}`);
-    lines.push(`DTSTART:${icsStamp(dt)}`);
-    lines.push(`DTEND:${icsStamp(dt + 30 * 60000)}`);
-    lines.push(`SUMMARY:${icsEscape(it.summary || '')}`);
-    if (it.description) lines.push(`DESCRIPTION:${icsEscape(it.description)}`);
-    if (it.url) lines.push(`URL:${icsEscape(it.url)}`);
-    lines.push(`STATUS:${it.cancelled ? 'CANCELLED' : 'CONFIRMED'}`);
-    lines.push('TRANSP:OPAQUE');
-    if (!it.cancelled) {
-      for (const m of ALARMS) {
-        lines.push('BEGIN:VALARM');
-        lines.push(`TRIGGER:-PT${m}M`);
-        lines.push('ACTION:DISPLAY');
-        lines.push(`DESCRIPTION:${icsEscape(it.summary || '截止提醒')}`);
-        lines.push('END:VALARM');
-      }
-    }
-    lines.push('END:VEVENT');
-  }
-  lines.push('END:VCALENDAR');
-  return lines.map(foldLine).join('\r\n') + '\r\n';
-}
-
-// 事件内容指纹：用来判断"这个节点的内容变了没有"，变了才递增 SEQUENCE
-function contentHash(it) {
-  return fnv(`${it.dt}|${it.summary}|${it.description}`);
-}
-
-/**
- * 与上次导出的快照比对，得到本次要写进文件的事件（含需要撤销的）。
- * @param {object} prev 上次的快照 {items:{uid:{seq,hash,dt,summary,label}}}
- * @returns {{items:Array, snapshot:object, stats:{events:number,updated:number,cancelled:number}}}
- */
-export function diffCalendar(prev, items, { now = Date.now() } = {}) {
-  const before = (prev && prev.items) || {};
-  const out = [];
-  const snapshot = {};
-  const stats = { events: 0, updated: 0, cancelled: 0 };
-  for (const it of items || []) {
-    const hash = contentHash(it);
-    const old = before[it.uid];
-    const seq = old ? (old.hash === hash ? old.seq : old.seq + 1) : 1;
-    if (old && old.hash !== hash) stats.updated++;
-    out.push({ ...it, seq });
-    snapshot[it.uid] = { seq, hash, dt: it.dt, label: it.label, summary: it.summary };
-    stats.events++;
-  }
-  // 上次导出过、这次已经不在列表里的（节点完成/删除/记录删除/改了岗位）→ 标记取消
-  for (const [uid, old] of Object.entries(before)) {
-    if (snapshot[uid]) continue;
-    out.push({ uid, seq: (Number(old.seq) || 0) + 1, cancelled: true, dt: old.dt, summary: old.summary, label: old.label });
-    stats.cancelled++;
-  }
-  return { items: out, snapshot: { at: new Date(now).toISOString(), items: snapshot }, stats };
-}
-
-/** 「清空」文件：把上次导出过的事件全部标记为取消（快照清空，下次导出从 SEQUENCE 1 重新开始） */
-export function clearCalendar(prev, { now = Date.now() } = {}) {
-  const before = (prev && prev.items) || {};
-  const items = Object.entries(before).map(([uid, old]) => ({
-    uid, seq: (Number(old.seq) || 0) + 1, cancelled: true, dt: old.dt, summary: old.summary, label: old.label,
-  }));
-  return { items, snapshot: { at: new Date(now).toISOString(), items: {} }, stats: { events: 0, updated: 0, cancelled: items.length } };
-}
+// 实现搬到了 calendar-ics.js（手机端也要导出这份文件，而手机壳子是整份缓存的，
+// 不该把 transfer.js 与 company-type.js 一起背上去）。这里原样转发，
+// dashboard.js 与 tools/test-transfer.mjs 的调用点一个字都不用改；
+// 两边是不是同一份实现，由 test-transfer 的「同一份实现」断言盯着。
+export {
+  CALENDAR_NAME, CALENDAR_KEY, ALARMS,
+  calendarUid, calendarItems, buildCalendarIcs, diffCalendar, clearCalendar,
+} from './calendar-ics.js';
 
 // ==================== 三、表格导入（粘贴 / CSV 文件） ====================
 //
@@ -462,6 +305,7 @@ export function clearCalendar(prev, { now = Date.now() } = {}) {
 /** 能识别的字段 → 界面上的名字（预览里的列映射下拉与这里共用一份，顺序就是下拉里的顺序） */
 export const FIELD_LABELS = {
   company: '公司', position: '岗位', status: '状态', stage: '轮次', result: '结果',
+  nature: '企业性质', industry: '行业赛道', typeCell: '企业类型',
   appliedAt: '投递日期', deadline: '截止节点', url: '链接', notes: '备注', jd: '岗位 JD',
 };
 
@@ -473,6 +317,10 @@ const COLUMN_ALIASES = {
   status: ['状态', '进度', '当前状态', '投递状态', '招聘状态', '进展', 'status', 'progress'],
   stage: ['轮次', '面试轮次', '当前轮次', '面试阶段', '阶段', 'stage', 'round'],
   result: ['结果', '面试结果', '投递结果', '结论', 'result', 'outcome'],
+  // 企业类型：两列分开的走性质/行业，合成一列的走 typeCell（导入时按分隔符拆开，逐段比枚举）
+  nature: ['企业性质', '性质', '单位性质', '公司性质', '企业所有制', '所有制', 'nature'],
+  industry: ['行业赛道', '行业', '赛道', '所属行业', '行业类型', 'industry'],
+  typeCell: ['企业类型', '企业标签', '单位类型', '企业分类', 'typecell'],
   appliedAt: ['投递日期', '投递时间', '投递日', '投递于', '申请日期', '申请时间', '日期', 'appliedat', 'applied', 'applydate', 'applieddate'],
   deadline: ['最近截止', '截止', '截止时间', '截止日期', '最近截止时间', '最近截止节点', 'ddl', 'deadline', 'duedate', 'due'],
   url: ['链接', '岗位链接', '投递链接', '职位链接', '招聘链接', '网址', 'url', 'link', 'joblink', 'applylink'],
@@ -895,6 +743,7 @@ export function tableToRecords(rows, { columns = [], headerRow = 0, localByKey =
   const out = [];
   const unknownStatus = new Map();
   const badDates = new Map();
+  const badTypes = new Map();
   const seen = new Set();
   let newCount = 0, mergeCount = 0, skipCount = 0, dupRows = 0, droppedDeadlines = 0;
 
@@ -963,13 +812,28 @@ export function tableToRecords(rows, { columns = [], headerRow = 0, localByKey =
       }
     }
 
+    // 企业类型：能拆出来的认，拆不出来的**整段丢掉并报给用户看**（认不出不瞎猜）。
+    // 表里根本没这两列时 cell() 返回空串 = 「表里没说」，合并时保留本机的值。
+    const natureRaw = cell('nature'), industryRaw = cell('industry'), typeRaw = cell('typeCell');
+    let nature = natureRaw ? CT.normalizeTypeValue('nature', natureRaw) : '';
+    let industry = industryRaw ? CT.normalizeTypeValue('industry', industryRaw) : '';
+    if (natureRaw && !nature) tally(badTypes, natureRaw);
+    if (industryRaw && !industry) tally(badTypes, industryRaw);
+    if (typeRaw) {
+      const split = CT.splitTypeCell(typeRaw);
+      // 合成列只补分开的两列没给出的那一半（同时存在时以「企业性质/行业」两列为准）
+      if (!nature) nature = split.nature;
+      if (!industry) industry = split.industry;
+      if (!split.nature && !split.industry) tally(badTypes, typeRaw);
+    }
+
     // 备注：合并时原样用表里的（空着就保留本机的）；新增时若状态词没认出来，把原词附在备注里，别丢
     let notes = cell('notes');
     if (isNew && unknown.length) notes = [notes, `状态：${unknown.join('、')}`].filter(Boolean).join('\n');
 
     if (isNew) newCount++; else mergeCount++;
     out.push({
-      company, position, url, jd: cell('jd'), notes, status, stage, result,
+      company, position, url, jd: cell('jd'), notes, status, stage, result, nature, industry,
       // 「创建时间」表格里没有，但也不能让它跟着导入时刻走：本机这条是 3 月建的，
       // 每次导入都把创建时间改成今天，就等于每导一次都白改一次这条记录（还会白顶一次时间戳）。
       createdAt: isNew ? '' : local.createdAt,
@@ -986,12 +850,13 @@ export function tableToRecords(rows, { columns = [], headerRow = 0, localByKey =
     newCount, mergeCount, skipCount, dupRows, droppedDeadlines,
     unknownStatus: [...unknownStatus.entries()].map(([word, count]) => ({ word, count })),
     badDates: [...badDates.entries()].map(([value, count]) => ({ value, count })),
+    badTypes: [...badTypes.entries()].map(([value, count]) => ({ value, count })),
   };
 }
 
 // ---------- 导出 CSV（面板顶栏「导出 CSV」用它；表头与 COLUMN_ALIASES 对得上，能原样导回来） ----------
 
-export const CSV_COLUMNS = ['公司', '岗位', '状态', '轮次', '结果', '投递日期', '最近截止', '链接', '备注', '面经', 'JD'];
+export const CSV_COLUMNS = ['公司', '岗位', '状态', '轮次', '结果', '企业性质', '行业赛道', '投递日期', '最近截止', '链接', '备注', '面经', 'JD'];
 
 function csvCell(v) {
   let s = String(v ?? '');
@@ -1032,6 +897,7 @@ export function buildCsv(records) {
     const nd = S.nextDeadline(r);
     return [
       r.company, r.position, r.status, r.stage || '', r.result || '',
+      r.nature || '', r.industry || '',
       csvStamp(r.appliedAt),
       nd ? `${nd.label} ${csvStamp(nd.datetime)}` : '',
       r.url, r.notes || '', interviewCell(r), r.jd || '',

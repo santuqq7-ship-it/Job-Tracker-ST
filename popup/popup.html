@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <title>投递状态管家</title>
   <link rel="stylesheet" href="popup.css">
+  <link rel="stylesheet" href="../pickers.css">
 </head>
 <body>
   <header class="topbar">
@@ -29,7 +30,24 @@
         <input id="company" type="text" placeholder="如：字节跳动" autocomplete="off">
       </div>
     </div>
+    <div class="field-row">
+      <div class="field">
+        <label for="nature">企业性质 <span class="label-opt">（可留空）</span></label>
+        <select id="nature"></select>
+        <input id="natureCustom" class="type-custom" type="text" placeholder="自定义企业性质…" autocomplete="off" hidden>
+      </div>
+      <div class="field">
+        <label for="industry">行业赛道 <span class="label-opt">（可留空）</span></label>
+        <select id="industry"></select>
+        <input id="industryCustom" class="type-custom" type="text" placeholder="自定义行业赛道…" autocomplete="off" hidden>
+      </div>
+    </div>
+    <div class="type-ai-row">
+      <button id="typeAiBtn" class="btn-ghost type-ai-btn" type="button" title="本地企业库或名称规则认错了（比如把「中国中铁」认成交通），点它重新问一次模型；只改你没手动动过的那一栏">🤖 AI 再认一次</button>
+      <span class="type-ai-note">本地认错了？点一下让 AI 重认</span>
+    </div>
     <div class="guess-source" id="guessSource">识别来源：等待抓取…</div>
+    <div class="type-hint" id="typeHint" hidden></div>
     <div class="ai-line" id="aiLine" hidden></div>
     <div class="field url-field">
       <label for="url">投递链接</label>
